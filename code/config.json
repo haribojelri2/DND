@@ -1,0 +1,72 @@
+{
+  "io": {
+    "dxf_path": "../Testbed Layout 260410.dxf",
+    "direction": "CCW"
+  },
+  "io_comments": {
+    "dxf_path": "입력 DXF 파일 경로",
+    "direction": "AGV 주행 방향. CCW(반시계) 또는 CW(시계)"
+  },
+  "tolerance": {
+    "snap_tol": 200.0,
+    "inter_merge_tol": 100.0,
+    "clean_tol": 110.0,
+    "snap_decimals": 6,
+    "short_straight_threshold": 900.0
+  },
+  "tolerance_comments": {
+    "snap_tol": "좌표 스냅 허용 오차 (mm)",
+    "inter_merge_tol": "세그먼트 병합 허용 오차 (mm)",
+    "clean_tol": "영세그먼트/중복 제거 오차 (mm)",
+    "snap_decimals": "좌표 소수점 자릿수",
+    "short_straight_threshold": "짧은 직선 분류 기준 (mm)"
+  },
+  "branch_detection": {
+    "n_branch_min_arc_sweep_deg": 10.0,
+    "n_branch_diagonal_axis_tol_deg": 5.0,
+    "scale_to_mm": 1.0
+  },
+  "branch_detection_comments": {
+    "n_branch_min_arc_sweep_deg": "N분기로 인정할 호의 최소 스윕각 (도)",
+    "n_branch_diagonal_axis_tol_deg": "N분기 중간 직선의 대각선 판별 기준 (도)",
+    "scale_to_mm": "도면 단위 → mm 변환 배율"
+  },
+  "clearance_nodes": {
+    "j1_downstream": 350.0,
+    "j3_arc_len": 350.0,
+    "lr_j2_upstream": 900.0,
+    "n_long_j2": 1500.0,
+    "n_short_j2": 1560.0,
+    "n_straight_threshold": 750.0,
+    "u_j1": 350.0,
+    "small_x_j1": 350.0,
+    "complex_lr_j1": 350.0,
+    "complex_lr_point_a_x": 1795.0,
+    "complex_lr_point_b2_x": 2100.0
+  },
+  "clearance_nodes_comments": {
+    "j1_downstream": "J1 노드 이동 거리 (mm)",
+    "j3_arc_len": "J3 노드 이동 거리 (mm)",
+    "lr_j2_upstream": "L/R J2 거리 (mm)",
+    "n_long_j2": "N분기 J2 Long (mm)",
+    "n_short_j2": "N분기 J2 Short (mm)",
+    "n_straight_threshold": "N분기 Long/Short 기준 (mm)",
+    "u_j1": "U분기 J1 거리 (mm)",
+    "small_x_j1": "소형 복합분기 J1 (mm)",
+    "complex_lr_j1": "복합분기 J1 (mm)",
+    "complex_lr_point_a_x": "복합분기 Point A 기준 X (mm)",
+    "complex_lr_point_b2_x": "복합분기 Point B2 기준 X (mm)"
+  },
+  "driving_nodes": {
+    "min_length": 4000.0,
+    "min_segment": 2000.0
+  },
+  "driving_nodes_comments": {
+    "min_length": "주행 노드 삽입 최소 링크 길이 (mm)",
+    "min_segment": "주행 노드 최소 구간 길이 (mm)"
+  },
+  "color_filter": {
+    "rail_color": 250,
+    "port_colors": []
+  }
+}

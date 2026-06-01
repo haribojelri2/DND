@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_logic.py)",
+      "Bash(DBG_COMPLEX=1 ../.venv/Scripts/python.exe test_logic.py)",
+      "Bash(\".venv/Scripts/python.exe\" -c \"import io; [print\\(repr\\(l\\)\\) for l in list\\(open\\('Testbed Layout 260410.map',encoding='utf-8',errors='replace'\\)\\)[:12]]\")"
+    ]
+  }
+}

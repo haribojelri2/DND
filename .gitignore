@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Build / dist
+build/
+dist/
+*.spec
+
+# Large binary / temp
+*.zip
+*.bak
+*.pptx
+*.dwg
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.user
+
+# Claude jobs
+.claude/jobs/

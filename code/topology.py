@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import math
 import copy
 from typing import List, Tuple, Optional, Any, Dict, Set
@@ -407,7 +407,7 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
                     q.append((nv, new_path))
         return []
 
-    def _find_shortest_undirected_path(start_v, end_v, exclude_edges):
+    def _find_shortest_undirected_path(start_v, end_v, exclude_edges, max_len=20):
         from collections import deque
         q = deque([(start_v, [])])
         visited = {start_v}
@@ -415,6 +415,8 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             cur, path = q.popleft()
             if cur == end_v:
                 return path
+            if len(path) >= max_len:
+                continue
             for ei, ee in out_edges.get(cur, []):
                 if ei in exclude_edges:
                     continue
@@ -544,6 +546,29 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         mer_arc_start_v = _v(merge_arcs[0][1].start)
         _pair_X_pre = dist(arc.start, merge_arcs[0][1].end)
         arm_path = _collect_arm_edge_path(div_arc_end_v, mer_arc_start_v, exclude_edge_idx=top_line_idx, exclude_set=_nu_branch_idx)
+        if not arm_path:
+            # arm이 호직호(ARC1-LINE-ARC2)일 때: 두 ARC 모두 _pre_u_idx에 있고
+            # 실제 U쌍(dist < 1601)이며 정확히 div→mer 구간을 잇는 경우만 허용
+            for _a1i, _a1e in out_edges.get(div_arc_end_v, []):
+                if _a1e.edge_type != 'ARC' or _a1i not in _pre_u_idx:
+                    continue
+                _vm = _v(_a1e.end)
+                for _li, _le in out_edges.get(_vm, []):
+                    if _le.edge_type != 'LINE':
+                        continue
+                    _vp = _v(_le.end)
+                    for _a2i, _a2e in out_edges.get(_vp, []):
+                        if _a2e.edge_type != 'ARC' or _a2i not in _pre_u_idx:
+                            continue
+                        if _v(_a2e.end) != mer_arc_start_v:
+                            continue
+                        if dist(_a1e.start, _a2e.end) < _U_X_PRE:
+                            arm_path = [_a1i, _li, _a2i]
+                            break
+                    if arm_path:
+                        break
+                if arm_path:
+                    break
         arm_indices = set(arm_path)
 
         # X 체크: U_X_THRESHOLD는 아직 정의 안 됐으므로 1601.0 하드코드
@@ -577,6 +602,50 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
 
         if _is_complex:
             # 1) 진짜 복합분기 (빨간색): 병렬 우회선로를 가진 구조
+            # directed BFS 실패 시 div_arc.end→ARC→LINE→ARC→mer_arc.start 직접 3홉 탐색
+            if not arm_path:
+                # forward: div_arc.end → ARC → LINE → ARC → mer_arc.start
+                for _a1i, _a1e in out_edges.get(div_arc_end_v, []):
+                    if _a1e.edge_type != "ARC":
+                        continue
+                    _vm = _v(_a1e.end)
+                    for _li, _le in out_edges.get(_vm, []):
+                        if _le.edge_type != "LINE":
+                            continue
+                        _vp = _v(_le.end)
+                        for _a2i, _a2e in out_edges.get(_vp, []):
+                            if _a2e.edge_type != "ARC":
+                                continue
+                            if _v(_a2e.end) == mer_arc_start_v:
+                                arm_path = [_a1i, _li, _a2i]
+                                break
+                        if arm_path:
+                            break
+                    if arm_path:
+                        break
+            if not arm_path:
+                # reverse: mer_arc.start → ARC → LINE → ARC → div_arc.end (arm이 역방향일 때)
+                for _a1i, _a1e in out_edges.get(mer_arc_start_v, []):
+                    if _a1e.edge_type != "ARC":
+                        continue
+                    _vm = _v(_a1e.end)
+                    for _li, _le in out_edges.get(_vm, []):
+                        if _le.edge_type != "LINE":
+                            continue
+                        _vp = _v(_le.end)
+                        for _a2i, _a2e in out_edges.get(_vp, []):
+                            if _a2e.edge_type != "ARC":
+                                continue
+                            if _v(_a2e.end) == div_arc_end_v:
+                                arm_path = [_a1i, _li, _a2i]
+                                break
+                        if arm_path:
+                            break
+                    if arm_path:
+                        break
+            if arm_path:
+                arm_indices = set(arm_path)
+                _arm_u_idx = {ai for ai in arm_indices if _is_u_arc(ai) or ai in _pre_u_idx}
             _complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
             _complex_lr_flat.add(i)
             _complex_lr_flat.add(merge_arc_idx)
@@ -596,6 +665,8 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
     for p in _u_pairs_all:
         if any(idx in _complex_lr_flat for idx in p):
             continue
+        if any(idx in _intra_arm_u_idx for idx in p):
+            continue  # arm 내부 호직호 U — 복합분기가 전체 담당
         fa = unified_edges[p[0]]
         la = unified_edges[p[-1]]
         if fa.edge_type == "ARC" and la.edge_type == "ARC":
@@ -608,12 +679,9 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             _u_pairs.append(p)
 
     # 단순 분기/전환선 (파란색, 대형 및 소형 모두)도 U 분기로 간주하여 대칭 clearance 및 병합 처리
-    print(f"DEBUG: Found {len(_plain_no_arm_pairs)} plain no arm pairs, and {len(_small_x_no_arm_pairs)} small X no arm pairs.")
     for div_idx, mer_idx, top_line_idx in _plain_no_arm_pairs:
-        print(f"  Adding plain bypass to _u_pairs: ({div_idx}, {mer_idx})")
         _u_pairs.append((div_idx, mer_idx))
     for div_idx, mer_idx, top_line_idx in _small_x_no_arm_pairs:
-        print(f"  Adding small X plain bypass to _u_pairs: ({div_idx}, {mer_idx})")
         _u_pairs.append((div_idx, mer_idx))
 
 
@@ -1070,6 +1138,7 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         junc_B = mer_arc.end
         top_line_e = unified_edges[top_line_idx]
         X = dist(div_arc.end, mer_arc.start)
+        pair_X = dist(div_arc.start, mer_arc.end)  # J1 이전에 계산 (top_line 길이)
 
         # if X < U_X_THRESHOLD:
         #     continue  # X < 1600: U 규칙이 처리 — 노드 삽입 금지
@@ -1119,36 +1188,73 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             top_line_e.end = new_pt
             top_line_e._data.p2 = new_pt
 
-        # Point A: top LINE 중간 (X >= 1800이고 arm이 존재할 때만 — arm_len=0은 U턴 형태)
-        if X >= COMPLEX_LR_POINT_A_X and arm_path and X <= COMPLEX_LR_POINT_A_X + 10:
+        # arm 오른쪽 수직 LINE 탐색: arm_arc1.start ↔ arm_arc2.end 사이 LINE
+        # arm_arc1 = div_arc.end의 in_edge ARC (오른쪽에서 들어오는 호)
+        # arm_arc2 = mer_arc.start의 out_edge ARC (오른쪽으로 나가는 호)
+        _arm_line_idx, _arm_line_e = None, None
+        _arm_arc1_start_v = None
+        _arm_arc2_end_v = None
+        for _ai, _ae in in_edges.get(_v(div_arc.end), []):
+            if _ae.edge_type == "ARC":
+                _arm_arc1_start_v = _v(_ae.start)
+                break
+        for _ai, _ae in out_edges.get(_v(mer_arc.start), []):
+            if _ae.edge_type == "ARC":
+                _arm_arc2_end_v = _v(_ae.end)
+                break
+        # arc1_start의 out ARC 끝점(LEFT_TOP)과 arc2_end의 in ARC 시작점(LEFT_BOT) 사이 LINE 탐색
+        if _arm_arc1_start_v is not None and _arm_arc2_end_v is not None:
+            _v_left_top, _v_left_bot = None, None
+            for _ai, _ae in out_edges.get(_arm_arc1_start_v, []):
+                if _ae.edge_type == "ARC":
+                    _v_left_top = _v(_ae.end)
+                    break
+            for _ai, _ae in in_edges.get(_arm_arc2_end_v, []):
+                if _ae.edge_type == "ARC":
+                    _v_left_bot = _v(_ae.start)
+                    break
+            if _v_left_top and _v_left_bot:
+                from collections import deque as _deque
+                for _sv, _ev in [(_v_left_top, _v_left_bot), (_v_left_bot, _v_left_top)]:
+                    _q = _deque([(_sv, [])])
+                    _vis = {_sv}
+                    while _q and _arm_line_idx is None:
+                        _cv, _path = _q.popleft()
+                        if len(_path) > 5:
+                            break
+                        for _bi, _be in out_edges.get(_cv, []):
+                            _nv = _v(_be.end)
+                            _new_path = _path + [_bi]
+                            if _nv == _ev:
+                                for _pi in _new_path:
+                                    if unified_edges[_pi].edge_type == "LINE":
+                                        _arm_line_idx = _pi
+                                        _arm_line_e = unified_edges[_pi]
+                                        break
+                                break
+                            if _nv not in _vis:
+                                _vis.add(_nv)
+                                _q.append((_nv, _new_path))
+                    if _arm_line_idx is not None:
+                        break
 
+        # Point A: top LINE 중간 (X ≈ 1800이고 arm LINE 존재할 때)
+        if (X >= COMPLEX_LR_POINT_A_X and X <= COMPLEX_LR_POINT_A_X + 10
+                and _arm_line_idx is not None):
             mid_pt = (_snap((top_line_e.start[0] + top_line_e.end[0]) * 0.5),
                       _snap((top_line_e.start[1] + top_line_e.end[1]) * 0.5))
             _add_line_split(top_line_idx, top_line_e, mid_pt)
 
-        # Point B: arm 경로에서 ARC-LINE-ARC 패턴의 직선 (X >= 1800일 때만)
-        # X >= 2100: 1/3, 2/3 두 곳 / 그 외: 1/2 한 곳
-        if X < COMPLEX_LR_POINT_A_X:
+        # Point B: arm 오른쪽 수직 LINE에 삽입 (X >= 1800일 때만)
+        if X < COMPLEX_LR_POINT_A_X or _arm_line_idx is None:
             continue
-        _point_b_done = set()
-        for k in range(1, len(arm_path) - 1):
-            if arm_path[k] == top_line_idx:
-                continue  # Point A에서 이미 처리
-            if arm_path[k] in _point_b_done:
-                continue  # 중복 방지
-            prev_e = unified_edges[arm_path[k - 1]]
-            curr_e = unified_edges[arm_path[k]]
-            next_e = unified_edges[arm_path[k + 1]]
-            if (prev_e.edge_type == "ARC" and curr_e.edge_type == "LINE"
-                    and next_e.edge_type == "ARC"):
-                sx, sy = curr_e.start[0], curr_e.start[1]
-                ex, ey = curr_e.end[0], curr_e.end[1]
-                if X >= COMPLEX_LR_POINT_B2_X:
-                    _add_line_split(arm_path[k], curr_e, (_snap(sx + (ex - sx) / 3), _snap(sy + (ey - sy) / 3)))
-                    _add_line_split(arm_path[k], curr_e, (_snap(sx + (ex - sx) * 2 / 3), _snap(sy + (ey - sy) * 2 / 3)))
-                else:
-                    _add_line_split(arm_path[k], curr_e, (_snap((sx + ex) * 0.5), _snap((sy + ey) * 0.5)))
-                _point_b_done.add(arm_path[k])
+        sx, sy = _arm_line_e.start[0], _arm_line_e.start[1]
+        ex, ey = _arm_line_e.end[0], _arm_line_e.end[1]
+        if X >= COMPLEX_LR_POINT_B2_X:
+            _add_line_split(_arm_line_idx, _arm_line_e, (_snap(sx + (ex - sx) / 3), _snap(sy + (ey - sy) / 3)))
+            _add_line_split(_arm_line_idx, _arm_line_e, (_snap(sx + (ex - sx) * 2 / 3), _snap(sy + (ey - sy) * 2 / 3)))
+        else:
+            _add_line_split(_arm_line_idx, _arm_line_e, (_snap((sx + ex) * 0.5), _snap((sy + ey) * 0.5)))
 
     # ------------------ [소형 복합분기 X<1601 — U 노드 규칙] ------------------
     SMALL_X_J1 = _cn.get("small_x_j1", 350.0)
@@ -1180,6 +1286,8 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         mer_arc.forced_link_type = _arc_lt(mer_arc._data)
         _plain_no_arm_arc_idx.add(div_idx)
         _plain_no_arm_arc_idx.add(mer_idx)
+        _split_j3_diverge(div_arc, J3_ARC_LEN)
+        _split_j3_merge(mer_arc, J3_ARC_LEN)
 
     # ------------------ [N 분기] ------------------
     for arc_pair in _n_pairs:

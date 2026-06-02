@@ -12,10 +12,12 @@ dist/
 *.spec
 
 # Large binary / temp
+*.dxf
+*.dwg
+*.map
 *.zip
 *.bak
 *.pptx
-*.dwg
 
 # IDE
 .idea/

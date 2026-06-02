@@ -416,6 +416,7 @@ def arc_subsegment(arc: ArcSeg, pa: Tuple[float, float], pb: Tuple[float, float]
         p_mid_curve=pm_sub,
         dxf_start_deg=sa,
         dxf_end_deg=ea,
+        layer=getattr(arc, "layer", "0"),
     )
 
 def reproject_arcs_to_circle(arcs: List[ArcSeg]) -> None:

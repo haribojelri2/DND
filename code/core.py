@@ -14,6 +14,7 @@ SHORT_STRAIGHT_THRESHOLD = 900.0
 class LineSeg:
     p1: Tuple[float, float]
     p2: Tuple[float, float]
+    layer: str = "0"
 
 @dataclass
 class ArcSeg:
@@ -30,6 +31,7 @@ class ArcSeg:
     # 원본 DXF(또는 분할 직후) 각도 스냅샷: glue/snap으로 끝점이 조금 움직여도 U 판별에 사용
     dxf_start_deg: Optional[float] = None
     dxf_end_deg: Optional[float] = None
+    layer: str = "0"
 
 class Edge:
     def __init__(self, seg_data):

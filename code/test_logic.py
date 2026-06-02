@@ -57,10 +57,11 @@ U_BRANCH_ARC_SUM_TARGET_MM    = _bd.get("u_branch_arc_sum_target_mm", 2000.0) + 
 _cf = _cfg.get("color_filter", {})
 RAIL_COLOR = _cf.get("rail_color") or None
 PORT_COLORS = _cf.get("port_colors") or []
+RAIL_LAYERS = _cf.get("rail_layers") or None  # [] → None (필터 없음)
 
 doc = ezdxf.readfile(str(DXF_PATH))
-lines, arcs = collect_entities_recursive(doc, rail_color=RAIL_COLOR)
-if RAIL_COLOR is not None:
+lines, arcs = collect_entities_recursive(doc, rail_color=RAIL_COLOR, rail_layers=RAIL_LAYERS)
+if RAIL_COLOR is not None or RAIL_LAYERS:
     print(f"레일 필터링 완료: LINE {len(lines)}개, ARC {len(arcs)}개")
 edges_raw_no_split_no_unify = build_edges_raw_no_split_no_unify(lines, arcs)
 split_lines, arcs, intersection_vertices = split_edges_at_intersections(lines, arcs)

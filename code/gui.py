@@ -7,7 +7,7 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 import ezdxf
 from core import *
 from dxf_parser import (collect_entities_recursive, build_edges_raw_no_split_no_unify,
-                        clean_edges, scan_entity_colors)
+                        clean_edges, scan_entity_colors, scan_entity_layers)
 from geometry import (split_edges_at_intersections, glue_arc_endpoints_to_lines,
                       snap_segments, reproject_arcs_to_circle,
                       merge_line_segments_at_degree2_nodes)
@@ -41,7 +41,8 @@ def save_cfg(cfg: dict):
 # ── 파이프라인 (별도 스레드에서 실행) ──────────────────────────────────────
 def run_pipeline(dxf_path: str, cfg: dict, log,
                  rail_color: int | None = None,
-                 port_colors: list | None = None):
+                 port_colors: list | None = None,
+                 rail_layers: list | None = None):
     DXF_PATH = Path(dxf_path)
     MAP_OUT     = DXF_PATH.parent / (DXF_PATH.stem + ".map")
     ORI_MAP_OUT = DXF_PATH.parent / ("ori_" + DXF_PATH.stem + ".map")
@@ -58,10 +59,13 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
 
     log("DXF 읽는 중...")
     doc = ezdxf.readfile(str(DXF_PATH))
+    _rl = rail_layers if rail_layers else None
     if rail_color is not None:
         log(f"레일 색상 필터링 중... (색상 {rail_color})")
-    lines, arcs = collect_entities_recursive(doc, rail_color=rail_color)
-    if rail_color is not None:
+    if _rl:
+        log(f"레일 레이어 필터링 중... ({', '.join(_rl)})")
+    lines, arcs = collect_entities_recursive(doc, rail_color=rail_color, rail_layers=_rl)
+    if rail_color is not None or _rl:
         log(f"레일 필터링 완료: LINE {len(lines)}개, ARC {len(arcs)}개")
     if port_colors:
         log(f"포트 색상 필터링 중... (색상 {port_colors})")
@@ -202,13 +206,15 @@ class App(tk.Tk):
         ttk.Combobox(frm_dir, textvariable=self.dir_var, values=["CCW", "CW"],
                      state="readonly", width=6).pack(side="left", pady=6)
 
-        # 색상 필터
-        frm_color = ttk.LabelFrame(self, text="색상 필터")
+        # 색상·레이어 필터
+        frm_color = ttk.LabelFrame(self, text="레일/포트 필터")
         frm_color.pack(fill="x", **pad)
 
         self._color_counts: dict[int, int] = {}
+        self._layer_counts: dict[str, int] = {}
         self._rail_color_var = tk.StringVar(value="")
         self._port_color_vars: dict[int, tk.BooleanVar] = {}
+        self._rail_layer_vars: dict[str, tk.BooleanVar] = {}
 
         top_row = ttk.Frame(frm_color)
         top_row.pack(fill="x", padx=6, pady=(6, 2))
@@ -289,32 +295,36 @@ class App(tk.Tk):
         else:
             self.frm_adv.pack_forget()
 
-    # ── 색상 스캔 ─────────────────────────────────────────────────────────
+    # ── 색상·레이어 스캔 ──────────────────────────────────────────────────
     def _scan_colors(self):
         dxf = self.dxf_var.get().strip()
         if not dxf or not Path(dxf).exists():
             messagebox.showerror("오류", "DXF 파일을 먼저 선택해주세요.")
             return
 
-        self._log("색상 스캔 중...")
+        self._log("색상·레이어 스캔 중...")
         self._scan_status.configure(text="스캔 중...")
 
         def worker():
             import traceback
             try:
                 doc = ezdxf.readfile(dxf)
-                counts = scan_entity_colors(doc)
+                color_counts = scan_entity_colors(doc)
+                layer_counts = scan_entity_layers(doc)
                 def done():
-                    self._color_counts = counts
-                    total = sum(counts.values())
-                    self._scan_status.configure(text=f"색상 {len(counts)}개, 총 {total}개 엔티티")
-                    self._log(f"색상 스캔 완료: {len(counts)}가지 색상, 총 {total}개 엔티티")
+                    self._color_counts = color_counts
+                    self._layer_counts = layer_counts
+                    total = sum(color_counts.values())
+                    self._scan_status.configure(
+                        text=f"색상 {len(color_counts)}개 / 레이어 {len(layer_counts)}개, 총 {total}개 엔티티"
+                    )
+                    self._log(f"스캔 완료: 색상 {len(color_counts)}가지, 레이어 {len(layer_counts)}가지, 총 {total}개 엔티티")
                     self._build_color_ui()
                 self.after(0, done)
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._scan_status.configure, {"text": "스캔 실패"})
-                self.after(0, self._log, f"[오류] 색상 스캔 실패: {e}\n{tb}")
+                self.after(0, self._log, f"[오류] 스캔 실패: {e}\n{tb}")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -330,16 +340,20 @@ class App(tk.Tk):
         for w in self._frm_color_body.winfo_children():
             w.destroy()
         self._port_color_vars.clear()
+        self._rail_layer_vars.clear()
 
-        saved_rail = self.cfg.get("color_filter", {}).get("rail_color")
-        saved_ports = set(self.cfg.get("color_filter", {}).get("port_colors", []))
+        saved_cf = self.cfg.get("color_filter", {})
+        saved_rail = saved_cf.get("rail_color")
+        saved_ports = set(saved_cf.get("port_colors", []))
+        saved_layers = set(saved_cf.get("rail_layers", []))
         sorted_colors = sorted(self._color_counts.keys())
+        sorted_layers = sorted(self._layer_counts.keys())
 
         cols = ttk.Frame(self._frm_color_body)
         cols.pack(fill="x")
 
-        # 레일 색상 (단일 선택) - 왼쪽
-        rail_frame = ttk.LabelFrame(cols, text="레일 색상 (1개 선택)")
+        # ── 레일 색상 (단일 선택) ──
+        rail_frame = ttk.LabelFrame(cols, text="레일 색상 (1개)")
         rail_frame.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=2)
         self._rail_color_var.set(str(saved_rail) if saved_rail is not None else "")
         ttk.Radiobutton(rail_frame, text="없음 (전체)", variable=self._rail_color_var,
@@ -355,12 +369,20 @@ class App(tk.Tk):
             ttk.Radiobutton(row, text=f"색{aci} ({cnt}개)",
                             variable=self._rail_color_var, value=str(aci)).pack(side="left")
 
-        # 포트 색상 
-        # (다중 선택) - 오른쪽
+        # ── 레일 레이어 (복수 선택) ──
+        layer_frame = ttk.LabelFrame(cols, text="레일 레이어 (복수 선택)")
+        layer_frame.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=2)
+        for lname in sorted_layers:
+            cnt = self._layer_counts[lname]
+            var = tk.BooleanVar(value=(lname in saved_layers))
+            self._rail_layer_vars[lname] = var
+            ttk.Checkbutton(layer_frame, text=f"{lname} ({cnt}개)", variable=var).pack(
+                anchor="w", padx=6, pady=1)
+
+        # ── 포트 색상 (복수 선택) ──
         port_frame = ttk.LabelFrame(cols, text="포트 색상 (복수 선택)")
         port_frame.pack(side="left", fill="both", expand=True, pady=2)
         for aci in sorted_colors:
-
             cnt = self._color_counts[aci]
             hex_c = self._aci_hex(aci)
             var = tk.BooleanVar(value=(aci in saved_ports))
@@ -421,7 +443,12 @@ class App(tk.Tk):
         rail_str = self._rail_color_var.get().strip()
         rail_color = int(rail_str) if rail_str else None
         port_colors = [aci for aci, var in self._port_color_vars.items() if var.get()]
-        self.cfg["color_filter"] = {"rail_color": rail_color, "port_colors": port_colors}
+        rail_layers = [lname for lname, var in self._rail_layer_vars.items() if var.get()]
+        self.cfg["color_filter"] = {
+            "rail_color": rail_color,
+            "port_colors": port_colors,
+            "rail_layers": rail_layers,
+        }
         save_cfg(self.cfg)
 
         self.btn_run.configure(state="disabled")
@@ -433,7 +460,8 @@ class App(tk.Tk):
             import traceback
             try:
                 run_pipeline(dxf, self.cfg, lambda m: self.after(0, self._log, m),
-                             rail_color=rail_color, port_colors=port_colors)
+                             rail_color=rail_color, port_colors=port_colors,
+                             rail_layers=rail_layers or None)
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._log, f"[오류] {e}\n{tb}")

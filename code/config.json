@@ -1,4 +1,4 @@
-﻿{
+{
   "io": {
     "dxf_path": "../Testbed Layout 260410.dxf",
     "direction": "CCW"
@@ -67,6 +67,7 @@
   },
   "color_filter": {
     "rail_color": 250,
-    "port_colors": []
+    "port_colors": [],
+    "rail_layers": []
   }
 }

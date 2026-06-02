@@ -48,11 +48,38 @@ def scan_entity_colors(doc) -> Dict[int, int]:
     return counts
 
 
+def scan_entity_layers(doc) -> Dict[str, int]:
+    """모델공간 레이어 이름 → 엔티티 수 반환."""
+    counts: Dict[str, int] = {}
+
+    def _count(ent):
+        et = ent.dxftype()
+        layer = str(getattr(ent.dxf, "layer", "0"))
+        if et in ("LINE", "ARC", "LWPOLYLINE", "CIRCLE"):
+            counts[layer] = counts.get(layer, 0) + 1
+        elif et == "POLYLINE":
+            from ezdxf.render.polyline import virtual_polyline_entities
+            for ve in virtual_polyline_entities(ent):
+                _count(ve)
+
+    for e in doc.modelspace():
+        if e.dxftype() == "INSERT":
+            for ve in iter_insert_virtual_entities(e):
+                _count(ve)
+        else:
+            _count(e)
+    return counts
+
+
 def collect_entities_recursive(
     doc,
     rail_color: Optional[int] = None,
+    rail_layers: Optional[List[str]] = None,
 ) -> Tuple[List[LineSeg], List[ArcSeg]]:
     """모델공간 전체: LINE/ARC, LWPOLYLINE·POLYLINE(bulge→LINE/ARC 분해). INSERT는 virtual_entities(WCS).
+
+    rail_color와 rail_layers는 AND 조건으로 적용됨.
+    둘 다 지정 시 색상·레이어 모두 일치해야 추출. 각각 None이면 해당 조건은 무시.
 
     반환
     ----
@@ -62,12 +89,13 @@ def collect_entities_recursive(
     lines: List[LineSeg] = []
     arcs: List[ArcSeg] = []
     ident = Matrix44()
+    _rail_layers_set: Optional[Set[str]] = set(rail_layers) if rail_layers else None
 
-    def add_line_xy(p1, p2):
+    def add_line_xy(p1, p2, layer: str = "0"):
         if dist(p1, p2) > MIN_LINE_LENGTH:
-            lines.append(LineSeg(p1, p2))
+            lines.append(LineSeg(p1, p2, layer=layer))
 
-    def add_arc_wcs(arc_ent):
+    def add_arc_wcs(arc_ent, layer: str = "0"):
         p0, p1 = arc_entity_endpoints_world_xy(arc_ent, ident)
         cx, cy, r, sa, ea = transform_arc_to_xy(ident, arc_ent)
         pm = arc_entity_midpoint_on_curve_world_xy(arc_ent, ident)
@@ -76,8 +104,12 @@ def collect_entities_recursive(
             p_start=p0, p_end=p1,
             p_mid_curve=pm,
             dxf_start_deg=float(sa), dxf_end_deg=float(ea),
+            layer=layer,
         )
-        arcs.extend(split_near_180_arcs([base_arc], target_deg=180.0, tol_deg=1.0))
+        split = split_near_180_arcs([base_arc], target_deg=180.0, tol_deg=1.0)
+        for seg in split:
+            seg.layer = layer
+        arcs.extend(split)
 
     _EQUIPMENT_TYPES = frozenset({"SPLINE", "CIRCLE", "ELLIPSE", "TEXT", "MTEXT", "DIMENSION"})
 
@@ -153,7 +185,7 @@ def collect_entities_recursive(
                 pass
             return
 
-        # 리프 엔티티: 색상 결정 후 레일 필터
+        # 리프 엔티티: 색상/레이어 결정 후 레일 필터 (AND 조건)
         raw = int(getattr(ent.dxf, "color", 256) or 256)
         layer_name = str(getattr(ent.dxf, "layer", "0"))
         if parent_color is not None and raw == 0:
@@ -161,6 +193,8 @@ def collect_entities_recursive(
         else:
             c = _resolve_color(ent, doc)
         if rail_color is not None and c != rail_color:
+            return
+        if _rail_layers_set is not None and layer_name not in _rail_layers_set:
             return
 
         if DEBUG_DXF and rail_color is not None:
@@ -170,9 +204,9 @@ def collect_entities_recursive(
 
         if et == "LINE":
             s, t = ent.dxf.start, ent.dxf.end
-            add_line_xy((float(s.x), float(s.y)), (float(t.x), float(t.y)))
+            add_line_xy((float(s.x), float(s.y)), (float(t.x), float(t.y)), layer=layer_name)
         elif et == "ARC":
-            add_arc_wcs(ent)
+            add_arc_wcs(ent, layer=layer_name)
         elif et == "LWPOLYLINE":
             from ezdxf.render.polyline import virtual_lwpolyline_entities
             for ve in virtual_lwpolyline_entities(ent):

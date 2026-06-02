@@ -56,6 +56,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     SCALE_TO_MM                    = _bd["scale_to_mm"]
     N_BRANCH_MIN_ARC_SWEEP_DEG     = _bd["n_branch_min_arc_sweep_deg"]
     N_BRANCH_DIAGONAL_AXIS_TOL_DEG = _bd["n_branch_diagonal_axis_tol_deg"]
+    U_BRANCH_ARC_SUM_TARGET_MM     = _bd.get("u_branch_arc_sum_target_mm", 2000.0) + 350.0
 
     log("DXF 읽는 중...")
     doc = ezdxf.readfile(str(DXF_PATH))
@@ -107,6 +108,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         scale_to_mm=SCALE_TO_MM,
         n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
         n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
+        u_branch_arc_sum_target_mm=U_BRANCH_ARC_SUM_TARGET_MM,
     )
     n_arc_pairs = [idx for idx, bt in merge_groups if bt == "N"]
     u_arc_pairs = [idx for idx, bt in merge_groups if bt == "U"]
@@ -122,10 +124,13 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         scale_to_mm=SCALE_TO_MM,
         n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
         n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
+        u_x_threshold_mm=1601.0,
+        exclude_indices=set(complex_lr_flat) | set(intra_arm_u_idx) | set(plain_arc_flat),
     )
     merge_groups_x = [
         (idx, bt) for idx, bt in merge_groups_x
-        if not any(i in complex_lr_flat for i in idx)
+        if not any(i in intra_arm_u_idx for i in idx)
+        and not any(i in complex_lr_flat for i in idx)
         and not any(i in plain_arc_flat for i in idx)
     ]
 
@@ -137,7 +142,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
             continue
         if any(idx in _existing_covered for idx in _idxs):
             continue
-        if any(idx in complex_lr_flat or idx in plain_arc_flat for idx in _idxs):
+        if any(idx in intra_arm_u_idx or idx in complex_lr_flat or idx in plain_arc_flat for idx in _idxs):
             continue
         merge_groups_x.append((_idxs, "U"))
         _existing_covered.update(_idxs)

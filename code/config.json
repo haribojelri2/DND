@@ -1,6 +1,6 @@
 ﻿{
   "io": {
-    "dxf_path": "../Testbed2.dxf",
+    "dxf_path": "../Testbed Layout 260410.dxf",
     "direction": "CCW"
   },
   "io_comments": {
@@ -66,7 +66,7 @@
     "min_segment": "주행 노드 최소 구간 길이 (mm)"
   },
   "color_filter": {
-    "rail_color": 1,
+    "rail_color": 250,
     "port_colors": []
   }
 }

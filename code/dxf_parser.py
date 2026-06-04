@@ -224,7 +224,57 @@ def collect_entities_recursive(
             if "STB" in block_name.upper():
                 continue
         dispatch(e)
+    lines = remove_contained_collinear_lines(lines)
     return lines, arcs
+
+
+def remove_contained_collinear_lines(lines, tol=2.0):
+    """같은 직선 위에서 더 긴 선에 완전히 포함되는 짧은 LINE을 제거.
+
+    본선 위에 짧은 레일 조각이 덧그려진 경우(부분 겹침 중복)는 clean_edges의
+    끝점-완전일치 중복 제거로 안 걸러져서, split 시 막다른 스텁 노드가 생긴다.
+    여기서 collinear-contained 중복을 미리 없애 N분기 등이 본선에 제대로 붙게 한다.
+    (완전 겹침만 제거 — 일부만 겹쳐 길이를 연장하는 선은 보존)
+    """
+    n = len(lines)
+    keep = [True] * n
+    prm = []
+    for L in lines:
+        x1, y1 = L.p1
+        x2, y2 = L.p2
+        dx, dy = x2 - x1, y2 - y1
+        ln = math.hypot(dx, dy)
+        ux, uy = (dx / ln, dy / ln) if ln > 1e-9 else (0.0, 0.0)
+        prm.append((x1, y1, ux, uy, ln))
+    for i in range(n):
+        if not keep[i]:
+            continue
+        xi, yi, ui, vi, ni = prm[i]
+        if ni <= 1e-9:
+            continue
+        for j in range(n):
+            if i == j or not keep[j]:
+                continue
+            nj = prm[j][4]
+            if nj > ni + tol:
+                continue  # j가 i보다 길면 i에 포함 불가
+            contained = True
+            tlo = thi = None
+            for (px, py) in (lines[j].p1, lines[j].p2):
+                perp = abs((px - xi) * (-vi) + (py - yi) * ui)  # i 무한직선까지 수직거리
+                if perp > tol:
+                    contained = False
+                    break
+                t = (px - xi) * ui + (py - yi) * vi  # i 위로의 사영 위치
+                tlo = t if tlo is None else min(tlo, t)
+                thi = t if thi is None else max(thi, t)
+            if not contained:
+                continue
+            if tlo >= -tol and thi <= ni + tol:
+                # j가 i 구간 안에 완전 포함 → 제거. 길이 같으면(상호포함) 인덱스 큰 쪽만 제거
+                if nj < ni - tol or (abs(nj - ni) <= tol and j > i):
+                    keep[j] = False
+    return [L for k, L in zip(keep, lines) if k]
 
 def transform_arc_to_xy(m: Matrix44, arc_ent):
     """중심은 OCS → WCS, 반지름·각은 WCS XY 투영(지도 평면)."""
@@ -262,7 +312,13 @@ def arc_entity_midpoint_on_curve_world_xy(arc_ent, m: Matrix44) -> Optional[Tupl
     except Exception:
         return None
 def clean_edges(segments, tolerance=INTER_MERGE_TOL):
-    """길이 0인 세그먼트와 중복 세그먼트를 제거."""
+    """길이 0인 세그먼트와 중복 세그먼트를 제거 (LINE·ARC 모두).
+
+    ARC 중복은 끝점만으로 판별하면 같은 현(chord)의 minor/major 호를 잘못
+    병합할 수 있어, 중심·반지름과 실제 호 중간점(p_mid_curve)까지 키에 포함해
+    완전히 동일한 호만 제거한다. (중복 호가 남으면 N분기 탐지가 호를 자기
+    복제본과 짝지어 N-S-N으로 깨짐)
+    """
     seen = set()
     result = []
     for seg in segments:
@@ -277,6 +333,20 @@ def clean_edges(segments, tolerance=INTER_MERGE_TOL):
             )
             if key in seen:
                 continue  # 중복 제거
+            seen.add(key)
+        elif isinstance(seg, ArcSeg):
+            ep = tuple(sorted((
+                (round(seg.p_start[0], 3), round(seg.p_start[1], 3)),
+                (round(seg.p_end[0], 3), round(seg.p_end[1], 3)),
+            )))
+            if seg.p_mid_curve is not None:
+                midk = (round(seg.p_mid_curve[0], 3), round(seg.p_mid_curve[1], 3))
+            else:
+                # 호 중간점이 없으면 방향까지 구분되도록 각도 스냅샷 사용
+                midk = (round(seg.start_deg, 3), round(seg.end_deg, 3))
+            key = ("ARC", ep, round(seg.cx, 3), round(seg.cy, 3), round(seg.r, 3), midk)
+            if key in seen:
+                continue  # 중복 호 제거
             seen.add(key)
         result.append(seg)
     return result

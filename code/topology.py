@@ -696,8 +696,16 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             _small_x_complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
             _complex_lr_flat.add(i)
             _complex_lr_flat.add(merge_arc_idx)
-            _complex_lr_flat.update(arm_indices - _arm_u_idx)
-            _intra_arm_u_idx.update(_arm_u_idx)
+            if _inner_is_u:
+                # 바깥 pair_X>=1601(복합)이지만 arm이 진짜 U(호-직-호, X<1601)이면
+                # arm U를 흡수하지 않고 단일 U로 보존한다. inner 호·선을 제외셋
+                # (complex_lr_flat·intra_arm_u_idx)에 넣지 않아, clearance 이후
+                # by_x 재탐지가 arc-line-arc 를 단일 U 링크로 병합하게 둔다.
+                # 바깥 div/mer만 복합으로 처리. (arm geometry는 위 흡수 단계에서 불변)
+                pass
+            else:
+                _complex_lr_flat.update(arm_indices - _arm_u_idx)
+                _intra_arm_u_idx.update(_arm_u_idx)
             _already_paired.add(i)
             _already_paired.add(merge_arc_idx)
             continue

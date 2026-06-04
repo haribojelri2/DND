@@ -90,6 +90,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         tol=INTER_MERGE_TOL, scale_to_mm=SCALE_TO_MM,
         short_straight_threshold=SHORT_STRAIGHT_THRESHOLD,
         header="#LSL - Jcolab",
+        u_x_threshold_mm=950.0,  # ori는 폭~900 호-호 U만 (호직호·반지름 큰 U 제외). 최종 맵은 1601로 별도 기준
     )
     _extra_ori = collect_port_nodes_by_color(doc, port_colors or [])
     stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1,

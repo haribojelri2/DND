@@ -29,7 +29,7 @@ Input files go in `CadToMap_Input/`. The pipeline writes **two** output `.map` f
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `SNAP_TOL` | 200.0 mm | Final coordinate snapping tolerance |
+| `SNAP_TOL` | 100.0 mm | Final coordinate snapping tolerance (100mm: <200mm 실선 구간 보존. 200이면 120mm 등이 스냅으로 붕괴) |
 | `INTER_MERGE_TOL` | 100.0 mm | Segment merging during processing |
 | `CLEAN_TOL` | 100.0 mm | Zero-length segment removal |
 | `SHORT_STRAIGHT_THRESHOLD` | 900.0 mm | Threshold to classify short straight links |

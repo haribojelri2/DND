@@ -248,7 +248,13 @@ def arc_minor_sweep_deg_edge(edge: Any) -> float:
 
 
 def edge_path_length_mm(edge: Any) -> float:
-    """asd.ipynb Edge: LINE은 직선 거리, ARC는 r * 라디안(작은 호)."""
+    """asd.ipynb Edge: LINE은 직선 거리, ARC는 r * 라디안(작은 호).
+
+    clearance 단계에서 호 끝점이 인접 직선(접선) 방향으로 밀려 **원 밖(off-circle)** 으로
+    나간 경우, 단순 r·각도는 끝점 위치와 어긋난다(각도가 부풀어 길이가 왜곡; 심하면
+    경로<현이 되어 불가능). 이때는 실제 경로 = 접선직선(start쪽) + 참호(r·turn) + 접선직선(end쪽)
+    으로 보정한다. 끝점이 원 위(on-circle)면 기존 식 그대로라 ori(이격 전) 출력은 불변.
+    """
     et = getattr(edge, "edge_type", None)
     if et == "LINE":
         return dist(edge.start, edge.end)
@@ -257,8 +263,42 @@ def edge_path_length_mm(edge: Any) -> float:
         r = float(d.r)
         if r < 1e-12:
             return 0.0
-        th = math.radians(minor_arc_sweep_deg(float(d.start_deg), float(d.end_deg)))
-        return r * th
+        cx, cy = float(d.cx), float(d.cy)
+        s = edge.start
+        e = edge.end
+        d1 = math.hypot(float(s[0]) - cx, float(s[1]) - cy)
+        d2 = math.hypot(float(e[0]) - cx, float(e[1]) - cy)
+        on_circle_eps = 2.0  # mm
+        if abs(d1 - r) <= on_circle_eps and abs(d2 - r) <= on_circle_eps:
+            # 끝점이 원 위 → 기존 동작 그대로 (ori 출력 불변)
+            th = math.radians(minor_arc_sweep_deg(float(d.start_deg), float(d.end_deg)))
+            return r * th
+        # off-circle: 접선직선 + 참호 + 접선직선
+        tin = math.sqrt(max(0.0, d1 * d1 - r * r))
+        tout = math.sqrt(max(0.0, d2 * d2 - r * r))
+        sa = math.degrees(math.atan2(float(s[1]) - cy, float(s[0]) - cx))
+        ea = math.degrees(math.atan2(float(e[1]) - cy, float(e[0]) - cx))
+        # 회전방향(L=CCW / R=CW): 끝점이 원 밖이라 끝점 기반 판정(arc_link_type)은 뒤집힐 수 있으므로
+        # corruption 에 영향받지 않는 출처를 우선한다 — ① clearance 전 기록한 _rot_link_type,
+        # ② forced_link_type, ③ 호 중점 p_mid_curve, ④ (최후) 끝점 기반.
+        lt = getattr(edge, "_rot_link_type", None) or getattr(edge, "forced_link_type", None)
+        if lt not in ("L", "R"):
+            pm = getattr(d, "p_mid_curve", None)
+            if pm is not None:
+                ma = math.degrees(math.atan2(float(pm[1]) - cy, float(pm[0]) - cx))
+                lt = "L" if ((ma - sa) % 360.0) <= ((ea - sa) % 360.0) else "R"
+            else:
+                lt = arc_link_type_from_arcseg(d)
+        if lt == "L":   # CCW
+            directed = (ea - sa) % 360.0
+        else:           # R / CW
+            directed = (sa - ea) % 360.0
+        phi1 = math.degrees(math.acos(max(-1.0, min(1.0, r / d1)))) if d1 > 1e-9 else 0.0
+        phi2 = math.degrees(math.acos(max(-1.0, min(1.0, r / d2)))) if d2 > 1e-9 else 0.0
+        true_sweep = directed - phi1 - phi2
+        if true_sweep < 0.0:
+            true_sweep = 0.0
+        return tin + r * math.radians(true_sweep) + tout
     return 0.0
 
 

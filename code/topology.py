@@ -348,6 +348,21 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
     from collections import defaultdict
     from core import dist, LineSeg, Edge
 
+    # 회전방향(L/R) 스냅샷: 아래 clearance 로직이 호 끝점을 인접 직선(접선) 방향으로 밀어
+    # **원 밖(off-circle)** 으로 보내면, 끝점 기반 회전판정(arc_link_type_from_arcseg)이 뒤집힐 수
+    # 있다. 아직 모든 호가 on-circle 인 지금 올바른 회전을 전용 속성에 기록해 두면,
+    # map_exporter.edge_path_length_mm 의 off-circle 길이 보정이 신뢰 가능한 회전을 쓴다.
+    try:
+        from map_exporter import arc_link_type_from_arcseg as _altfa_rot
+        for _re in unified_edges:
+            if getattr(_re, "edge_type", None) == "ARC" and getattr(_re, "_rot_link_type", None) is None:
+                try:
+                    _re._rot_link_type = _altfa_rot(_re._data)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # --- PPT 상수 (config 우선, 없으면 기본값) ---
     _cn = (cfg or {}).get("clearance_nodes", {})
     _dn = (cfg or {}).get("driving_nodes", {})

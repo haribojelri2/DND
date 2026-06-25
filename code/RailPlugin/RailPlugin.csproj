@@ -8,6 +8,8 @@
     <Platforms>x64</Platforms>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- 리본 버튼 아이콘(WPF System.Windows.Media)용 -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <!-- AutoCAD 2026 관리 어셈블리 (런타임 제공이므로 Private=false: DLL 복사 안 함) -->
@@ -22,6 +24,11 @@
     </Reference>
     <Reference Include="accoremgd">
       <HintPath>C:\Program Files\Autodesk\AutoCAD 2026\accoremgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- 리본 UI (Autodesk.Windows.RibbonControl 등) -->
+    <Reference Include="AdWindows">
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2026\AdWindows.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

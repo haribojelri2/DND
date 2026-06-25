@@ -327,8 +327,17 @@ namespace RailPlugin
         }
     }
 
-    // 커스텀 그립: 끝(상단) 그립 드래그 → 길이 변경 (크래시 방지 try/catch)
-    public class RailGrip : GripData { public double Length; public RailGrip(double len) { Length = len; } }
+    // 커스텀 그립: 상단·하단 두 끝 그립 드래그 → 길이 변경 (크래시 방지 try/catch)
+    //  IsBottom=false(상단): 아래 끝(삽입점) 고정, len = 원길이 + 축방향이동.
+    //  IsBottom=true (하단): 위 끝 월드좌표 고정, len = 원길이 − 축방향이동 + 삽입점 이동.
+    //  Pos0 = 드래그 시작 시 삽입점(누적 오차 방지: 위치를 절대값으로 다시 계산).
+    public class RailGrip : GripData
+    {
+        public double Length;
+        public bool IsBottom;
+        public Point3d Pos0;
+        public RailGrip(double len, bool bottom, Point3d pos0) { Length = len; IsBottom = bottom; Pos0 = pos0; }
+    }
 
     public class RailGripOverrule : GripOverrule
     {
@@ -341,9 +350,12 @@ namespace RailPlugin
                 double len = br != null ? RailFactory.GetLength(br) : -1;
                 if (len > 0)
                 {
-                    // 레일엔 끝점 리사이즈 그립 1개만 (기본 이동 그립 미추가 → base 호출 안 함)
-                    Point3d top = new Point3d(0, len, 0).TransformBy(br.BlockTransform);
-                    grips.Add(new RailGrip(len) { GripPoint = top });
+                    // 레일엔 양 끝 리사이즈 그립 2개 (기본 이동 그립 미추가 → base 호출 안 함)
+                    Point3d pos0 = br.Position;
+                    Point3d topPt = new Point3d(0, len, 0).TransformBy(br.BlockTransform);
+                    Point3d botPt = new Point3d(0, 0, 0).TransformBy(br.BlockTransform);
+                    grips.Add(new RailGrip(len, false, pos0) { GripPoint = topPt });
+                    grips.Add(new RailGrip(len, true,  pos0) { GripPoint = botPt });
                     return;
                 }
             }
@@ -355,17 +367,31 @@ namespace RailPlugin
             MoveGripPointsFlags bitFlags)
         {
             var br = e as BlockReference;
-            RailGrip rgFound = null;
-            foreach (GripData g in grips) if (g is RailGrip rg) { rgFound = rg; break; }
-            if (rgFound == null || br == null) { base.MoveGripPointsAt(e, grips, offset, bitFlags); return; }
+            RailGrip rg = null;
+            foreach (GripData g in grips) if (g is RailGrip r) { rg = r; break; }
+            if (rg == null || br == null) { base.MoveGripPointsAt(e, grips, offset, bitFlags); return; }
             try
             {
                 Vector3d axis = Vector3d.YAxis.TransformBy(br.BlockTransform).GetNormal();
                 double minlen = RailFactory.MinLen(RailFactory.GetKind(br));
-                double newLen = Math.Max(minlen, rgFound.Length + offset.DotProduct(axis));
+                double d = offset.DotProduct(axis);          // 축방향 이동량
+                double newLen;
+                Point3d newPos;
+                if (rg.IsBottom)
+                {
+                    newLen = Math.Max(minlen, rg.Length - d);            // 위 끝 고정
+                    newPos = rg.Pos0 + axis * (rg.Length - newLen);      // 삽입점을 아래로 이동
+                }
+                else
+                {
+                    newLen = Math.Max(minlen, rg.Length + d);            // 아래 끝(삽입점) 고정
+                    newPos = rg.Pos0;
+                }
                 Transaction top = e.Database.TransactionManager.TopTransaction;
                 if (top != null)
                 {
+                    if (!br.IsWriteEnabled) br.UpgradeOpen();
+                    if (rg.IsBottom) br.Position = newPos;
                     RailFactory.SetLength(top, br, newLen);   // br(e)는 이미 쓰기 열림
                 }
                 else
@@ -373,6 +399,7 @@ namespace RailPlugin
                     using (Transaction my = e.Database.TransactionManager.StartTransaction())
                     {
                         var brw = (BlockReference)my.GetObject(e.ObjectId, OpenMode.ForWrite);
+                        if (rg.IsBottom) brw.Position = newPos;
                         RailFactory.SetLength(my, brw, newLen);
                         my.Commit();
                     }
@@ -395,11 +422,155 @@ namespace RailPlugin
                 _ov.SetXDataFilter(RailFactory.APP);
             }
             catch { }
+            RibbonBuilder.Hook();   // 리본 탭/버튼 (실패해도 명령/그립은 정상)
         }
         public void Terminate()
         {
             try { if (_ov != null) Overrule.RemoveOverrule(RXObject.GetClass(typeof(BlockReference)), _ov); }
             catch { }
+            RibbonBuilder.Remove();
+        }
+    }
+
+    // 리본 버튼 클릭 → 해당 명령 실행 (명령창 타이핑 대체). 끝의 공백 = Enter.
+    public class RailCmdHandler : System.Windows.Input.ICommand
+    {
+        readonly string _cmd;
+        public RailCmdHandler(string cmd) { _cmd = cmd; }
+        public event System.EventHandler CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object p) => true;
+        public void Execute(object p)
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null) doc.SendStringToExecute(_cmd + " ", true, false, true);
+        }
+    }
+
+    // 리본 탭("Rail") + 버튼 3개를 코드로 생성. 모든 단계 try/catch — 실패해도 명령/그립은 정상 동작.
+    //  자동로드(.bundle) 시 Initialize()는 리본 생성 전에 돌 수 있어 ItemInitialized로 지연 생성.
+    //  Ensure()는 멱등(탭 Id 중복 가드) — 워크스페이스 전환으로 탭이 사라지면 다시 호출해 복구 가능.
+    public static class RibbonBuilder
+    {
+        const string TAB_ID = "RAILPLUGIN_TAB";
+
+        public static void Hook()
+        {
+            try
+            {
+                if (Autodesk.Windows.ComponentManager.Ribbon != null) { Ensure(); return; }
+                Autodesk.Windows.ComponentManager.ItemInitialized += OnItemInit;
+            }
+            catch { }
+        }
+
+        static void OnItemInit(object s, Autodesk.Windows.RibbonItemEventArgs e)
+        {
+            try
+            {
+                if (Autodesk.Windows.ComponentManager.Ribbon != null)
+                {
+                    Ensure();
+                    Autodesk.Windows.ComponentManager.ItemInitialized -= OnItemInit;
+                }
+            }
+            catch { }
+        }
+
+        // 멱등: 탭이 이미 있으면 아무것도 안 함
+        public static void Ensure()
+        {
+            try
+            {
+                var rc = Autodesk.Windows.ComponentManager.Ribbon;
+                if (rc == null) return;
+                foreach (Autodesk.Windows.RibbonTab t in rc.Tabs)
+                    if (t.Id == TAB_ID) return;
+
+                var tab = new Autodesk.Windows.RibbonTab { Title = "Rail", Id = TAB_ID };
+                var src = new Autodesk.Windows.RibbonPanelSource { Title = "Rail Tools" };
+                var panel = new Autodesk.Windows.RibbonPanel { Source = src };
+                tab.Panels.Add(panel);
+
+                src.Items.Add(MakeButton("2차선\n생성", "DRAWRAIL2", 2));
+                src.Items.Add(MakeButton("3차선\n생성", "DRAWRAIL3", 3));
+                src.Items.Add(MakeButton("길이\n변경", "RAILLEN", 0));
+
+                rc.Tabs.Add(tab);
+            }
+            catch { }
+        }
+
+        public static void Remove()
+        {
+            try
+            {
+                var rc = Autodesk.Windows.ComponentManager.Ribbon;
+                if (rc == null) return;
+                Autodesk.Windows.RibbonTab found = null;
+                foreach (Autodesk.Windows.RibbonTab t in rc.Tabs)
+                    if (t.Id == TAB_ID) { found = t; break; }
+                if (found != null) rc.Tabs.Remove(found);
+            }
+            catch { }
+        }
+
+        static Autodesk.Windows.RibbonButton MakeButton(string text, string cmd, int kind)
+        {
+            var b = new Autodesk.Windows.RibbonButton
+            {
+                Text = text,
+                ShowText = true,
+                ShowImage = true,
+                Size = Autodesk.Windows.RibbonItemSize.Large,
+                Orientation = System.Windows.Controls.Orientation.Vertical,
+                CommandHandler = new RailCmdHandler(cmd),
+            };
+            try
+            {
+                b.LargeImage = MakeIcon(kind, 32);
+                b.Image = MakeIcon(kind, 16);
+            }
+            catch { b.ShowImage = false; }   // 아이콘 생성 실패 → 글자만
+            return b;
+        }
+
+        // 간단한 레일 모양 아이콘을 WPF로 그려 BitmapSource 생성. kind: 2/3=차선수, 0=길이변경(양방향 화살표).
+        static System.Windows.Media.ImageSource MakeIcon(int kind, int sz)
+        {
+            double s = sz / 32.0;
+            var edge = new System.Windows.Media.Pen(System.Windows.Media.Brushes.Black, 2.0 * s);
+            var bar = new System.Windows.Media.Pen(System.Windows.Media.Brushes.SteelBlue, 1.6 * s);
+            System.Func<double, double, System.Windows.Point> P = (x, y) => new System.Windows.Point(x * s, y * s);
+            var dv = new System.Windows.Media.DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                if (kind == 2)
+                {
+                    dc.DrawLine(edge, P(10, 3), P(10, 29));
+                    dc.DrawLine(edge, P(22, 3), P(22, 29));
+                    dc.DrawLine(bar, P(11, 14), P(21, 14));
+                    dc.DrawLine(bar, P(11, 18), P(21, 18));
+                }
+                else if (kind == 3)
+                {
+                    dc.DrawLine(edge, P(7, 3), P(7, 29));
+                    dc.DrawLine(edge, P(16, 3), P(16, 29));
+                    dc.DrawLine(edge, P(25, 3), P(25, 29));
+                }
+                else
+                {
+                    dc.DrawLine(edge, P(16, 3), P(16, 29));   // 세로축
+                    dc.DrawLine(edge, P(16, 3), P(12, 8));    // 위 화살표
+                    dc.DrawLine(edge, P(16, 3), P(20, 8));
+                    dc.DrawLine(edge, P(16, 29), P(12, 24));  // 아래 화살표
+                    dc.DrawLine(edge, P(16, 29), P(20, 24));
+                }
+            }
+            var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                sz, sz, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+            rtb.Render(dv);
+            rtb.Freeze();
+            return rtb;
         }
     }
 }

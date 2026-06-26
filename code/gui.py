@@ -15,7 +15,7 @@ from topology import unify_edge_directions, insert_clearance_nodes
 from map_exporter import (export_map_from_unified_edges,
                           find_un_branch_merge_groups,
                           find_un_branch_merge_groups_by_x, save_map)
-from port_extractor import extract_stb_ports, collect_port_nodes_by_color
+from port_extractor import extract_stb_ports, collect_port_nodes_by_color, collect_port_nodes_by_layer
 
 
 def _get_base_dir() -> Path:
@@ -38,11 +38,24 @@ def save_cfg(cfg: dict):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+def _dedup_port_nodes(nodes):
+    """좌표(반올림) 기준 중복 포트 제거 — 색상·레이어 양쪽에서 잡힌 포트 합집합."""
+    seen = set()
+    out = []
+    for n in nodes:
+        k = (round(n.x), round(n.y))
+        if k not in seen:
+            seen.add(k)
+            out.append(n)
+    return out
+
+
 # ── 파이프라인 (별도 스레드에서 실행) ──────────────────────────────────────
 def run_pipeline(dxf_path: str, cfg: dict, log,
                  rail_color: int | None = None,
                  port_colors: list | None = None,
-                 rail_layers: list | None = None):
+                 rail_layers: list | None = None,
+                 port_layers: list | None = None):
     DXF_PATH = Path(dxf_path)
     MAP_OUT     = DXF_PATH.parent / (DXF_PATH.stem + ".map")
     ORI_MAP_OUT = DXF_PATH.parent / ("ori_" + DXF_PATH.stem + ".map")
@@ -93,7 +106,9 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         u_branch_arc_sum_target_mm=U_BRANCH_ARC_SUM_TARGET_MM,  # test_logic.py ori와 동일 기준(sync)
         u_x_threshold_mm=950.0,  # ori는 폭~900 호-호 U만 (호직호·반지름 큰 U 제외). 최종 맵은 1601로 별도 기준
     )
-    _extra_ori = collect_port_nodes_by_color(doc, port_colors or [])
+    _extra_ori = _dedup_port_nodes(
+        collect_port_nodes_by_color(doc, port_colors or [])
+        + collect_port_nodes_by_layer(doc, port_layers or []))
     stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1,
                                                    extra_port_nodes=_extra_ori)
     nodes.extend(new_t_nodes)
@@ -171,9 +186,11 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         precomputed_merge_groups=merge_groups_x,
         header="#LSL - Jcolab",
     )
-    _extra_final = collect_port_nodes_by_color(doc, port_colors or [])
+    _extra_final = _dedup_port_nodes(
+        collect_port_nodes_by_color(doc, port_colors or [])
+        + collect_port_nodes_by_layer(doc, port_layers or []))
     if _extra_final:
-        log(f"포트 색상 필터링 완료: {len(_extra_final)}개 포트 위치 검출")
+        log(f"포트 필터링 완료: {len(_extra_final)}개 포트 위치 검출 (색상+레이어 합집합)")
     stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1,
                                                    extra_port_nodes=_extra_final)
     nodes.extend(new_t_nodes)
@@ -222,6 +239,7 @@ class App(tk.Tk):
         self._rail_color_var = tk.StringVar(value="")
         self._port_color_vars: dict[int, tk.BooleanVar] = {}
         self._rail_layer_vars: dict[str, tk.BooleanVar] = {}
+        self._port_layer_vars: dict[str, tk.BooleanVar] = {}
 
         top_row = ttk.Frame(frm_color)
         top_row.pack(fill="x", padx=6, pady=(6, 2))
@@ -229,6 +247,7 @@ class App(tk.Tk):
         self._scan_status = ttk.Label(top_row, text="(DXF를 먼저 스캔하세요)")
         self._scan_status.pack(side="left", padx=8)
 
+        # 색상/레이어 선택 영역 (칸별 개별 스크롤은 _build_color_ui에서)
         self._frm_color_body = ttk.Frame(frm_color)
         self._frm_color_body.pack(fill="x", padx=6, pady=(0, 6))
 
@@ -343,16 +362,38 @@ class App(tk.Tk):
         except Exception:
             return "#cccccc"
 
+    def _make_scroll_column(self, parent, title, height=240, width=160):
+        """제목 LabelFrame + 세로 스크롤(Canvas) → 항목 담을 inner frame 반환. (칸마다 개별 스크롤)"""
+        lf = ttk.LabelFrame(parent, text=title)
+        lf.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=2)
+        canvas = tk.Canvas(lf, height=height, width=width, highlightthickness=0)
+        vsb = ttk.Scrollbar(lf, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        # 마우스휠: 해당 칸 위에 있을 때만 (다른 칸/로그창 간섭 방지)
+        def _wheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        return inner
+
     def _build_color_ui(self):
         for w in self._frm_color_body.winfo_children():
             w.destroy()
         self._port_color_vars.clear()
         self._rail_layer_vars.clear()
+        self._port_layer_vars.clear()
 
         saved_cf = self.cfg.get("color_filter", {})
         saved_rail = saved_cf.get("rail_color")
         saved_ports = set(saved_cf.get("port_colors", []))
         saved_layers = set(saved_cf.get("rail_layers", []))
+        saved_port_layers = set(saved_cf.get("port_layers", []))
         sorted_colors = sorted(self._color_counts.keys())
         sorted_layers = sorted(self._layer_counts.keys())
 
@@ -360,16 +401,13 @@ class App(tk.Tk):
         cols.pack(fill="x")
 
         # ── 레일 색상 (단일 선택) ──
-        rail_frame = ttk.LabelFrame(cols, text="레일 색상 (1개)")
-        rail_frame.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=2)
+        rail_frame = self._make_scroll_column(cols, "레일 색상 (1개)")
         self._rail_color_var.set(str(saved_rail) if saved_rail is not None else "")
         ttk.Radiobutton(rail_frame, text="없음 (전체)", variable=self._rail_color_var,
                         value="").pack(anchor="w", padx=6, pady=1)
         for aci in sorted_colors:
-            cnt = self._color_counts[aci]
-            hex_c = self._aci_hex(aci)
-            row = ttk.Frame(rail_frame)
-            row.pack(anchor="w", padx=6, pady=1)
+            cnt = self._color_counts[aci]; hex_c = self._aci_hex(aci)
+            row = ttk.Frame(rail_frame); row.pack(anchor="w", padx=6, pady=1)
             swatch = tk.Canvas(row, width=12, height=12, highlightthickness=0)
             swatch.create_rectangle(0, 0, 12, 12, fill=hex_c, outline="gray")
             swatch.pack(side="left", padx=(0, 3))
@@ -377,8 +415,7 @@ class App(tk.Tk):
                             variable=self._rail_color_var, value=str(aci)).pack(side="left")
 
         # ── 레일 레이어 (복수 선택) ──
-        layer_frame = ttk.LabelFrame(cols, text="레일 레이어 (복수 선택)")
-        layer_frame.pack(side="left", fill="both", expand=True, padx=(0, 4), pady=2)
+        layer_frame = self._make_scroll_column(cols, "레일 레이어 (복수)")
         for lname in sorted_layers:
             cnt = self._layer_counts[lname]
             var = tk.BooleanVar(value=(lname in saved_layers))
@@ -387,19 +424,25 @@ class App(tk.Tk):
                 anchor="w", padx=6, pady=1)
 
         # ── 포트 색상 (복수 선택) ──
-        port_frame = ttk.LabelFrame(cols, text="포트 색상 (복수 선택)")
-        port_frame.pack(side="left", fill="both", expand=True, pady=2)
+        port_frame = self._make_scroll_column(cols, "포트 색상 (복수)")
         for aci in sorted_colors:
-            cnt = self._color_counts[aci]
-            hex_c = self._aci_hex(aci)
+            cnt = self._color_counts[aci]; hex_c = self._aci_hex(aci)
             var = tk.BooleanVar(value=(aci in saved_ports))
             self._port_color_vars[aci] = var
-            row = ttk.Frame(port_frame)
-            row.pack(anchor="w", padx=6, pady=1)
+            row = ttk.Frame(port_frame); row.pack(anchor="w", padx=6, pady=1)
             swatch = tk.Canvas(row, width=12, height=12, highlightthickness=0)
             swatch.create_rectangle(0, 0, 12, 12, fill=hex_c, outline="gray")
             swatch.pack(side="left", padx=(0, 3))
             ttk.Checkbutton(row, text=f"색{aci} ({cnt}개)", variable=var).pack(side="left")
+
+        # ── 포트 레이어 (복수 선택) ──
+        port_layer_frame = self._make_scroll_column(cols, "포트 레이어 (복수)")
+        for lname in sorted_layers:
+            cnt = self._layer_counts[lname]
+            var = tk.BooleanVar(value=(lname in saved_port_layers))
+            self._port_layer_vars[lname] = var
+            ttk.Checkbutton(port_layer_frame, text=f"{lname} ({cnt}개)", variable=var).pack(
+                anchor="w", padx=6, pady=1)
 
     # ── 이벤트 ───────────────────────────────────────────────────────────
     def _default_dxf(self) -> str:
@@ -451,10 +494,12 @@ class App(tk.Tk):
         rail_color = int(rail_str) if rail_str else None
         port_colors = [aci for aci, var in self._port_color_vars.items() if var.get()]
         rail_layers = [lname for lname, var in self._rail_layer_vars.items() if var.get()]
+        port_layers = [lname for lname, var in self._port_layer_vars.items() if var.get()]
         self.cfg["color_filter"] = {
             "rail_color": rail_color,
             "port_colors": port_colors,
             "rail_layers": rail_layers,
+            "port_layers": port_layers,
         }
         save_cfg(self.cfg)
 
@@ -468,7 +513,7 @@ class App(tk.Tk):
             try:
                 run_pipeline(dxf, self.cfg, lambda m: self.after(0, self._log, m),
                              rail_color=rail_color, port_colors=port_colors,
-                             rail_layers=rail_layers or None)
+                             rail_layers=rail_layers or None, port_layers=port_layers or None)
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._log, f"[오류] {e}\n{tb}")

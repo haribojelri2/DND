@@ -226,6 +226,65 @@ def collect_port_nodes_by_color(doc, port_colors: List[int]) -> List[TransferNod
     return result
 
 
+def collect_port_nodes_by_layer(doc, port_layers: List[str]) -> List[TransferNode]:
+    """선택된 레이어의 LINE을 가진 리프 INSERT 블록의 BBox 중심점을 포트 위치로 수집.
+    collect_port_nodes_by_color의 레이어판 — 색상 대신 LINE 레이어로 매칭."""
+    if not port_layers:
+        return []
+    from ezdxf.math import Vec3
+    layer_set = set(str(l) for l in port_layers)
+    result: List[TransferNode] = []
+    seen: set = set()
+
+    def _recurse(virtual_insert, depth=0):
+        if depth > 10:
+            return
+        try:
+            for ve in virtual_insert.virtual_entities():
+                if ve.dxftype() != "INSERT":
+                    continue
+                vname = ve.dxf.name or ""
+                if vname.startswith("*"):
+                    continue
+                block = doc.blocks.get(vname)
+                if block is None:
+                    continue
+                child_inserts = [
+                    be for be in block
+                    if be.dxftype() == "INSERT" and not (be.dxf.name or "").startswith("*")
+                ]
+                if child_inserts:
+                    _recurse(ve, depth + 1)
+                else:
+                    xs, ys = [], []
+                    for be in block:
+                        if be.dxftype() == "LINE" and str(be.dxf.layer) in layer_set:
+                            xs += [be.dxf.start.x, be.dxf.end.x]
+                            ys += [be.dxf.start.y, be.dxf.end.y]
+                    if not xs:
+                        continue
+                    try:
+                        m = ve.matrix44()
+                    except Exception:
+                        continue
+                    lx = (min(xs) + max(xs)) / 2
+                    ly = (min(ys) + max(ys)) / 2
+                    wcs = m.transform(Vec3(lx, ly, 0))
+                    cx = round(wcs.x, 0)
+                    cy = round(wcs.y, 0)
+                    key = (cx, cy)
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(TransferNode(x=cx, y=cy))
+        except Exception:
+            pass
+
+    for e in doc.modelspace():
+        if e.dxftype() == "INSERT":
+            _recurse(e)
+    return result
+
+
 def extract_stb_ports(
     doc,
     nodes: List,

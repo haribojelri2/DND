@@ -23,7 +23,7 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v3.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v4.dxf", 5000.0),
     (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
 ]
 EELB = 450.0 * math.sin(math.radians(45.0))
@@ -262,6 +262,10 @@ def classify_unit(ents, rigid_end_dist=None):
                 m = 0.5 + 0.5 * (fc - center_y) / (r_a - center_y) if half == 'top' \
                     else 0.5 - 0.5 * (center_y - fc) / (center_y - r_a)
                 for st in f: st['mult_end'] = m
+        # 중앙 H분기(게이트 쌍): 길이 고정 요구 → 전 멤버 0.5로 강체 이동
+        for st in raw_stations:
+            if not st.get('rigid') and abs(st['anchor'] - center_y) <= 3000.0:
+                st['mult_end'] = 0.5
     u.stations = sorted(raw_stations, key=lambda s: s['mult'])
 
     # 내부레일 끝점 배수 (fracstretch), 캡(또는 캡 강체 스테이션)에 붙으면 캡 신축 편입

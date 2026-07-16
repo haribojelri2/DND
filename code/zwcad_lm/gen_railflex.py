@@ -25,7 +25,7 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_interp: 'seg'(3차선, N분기 끝 두 구간 등식) | 'gap'(4차선, 간격 비율 유지)
 INPUTS = [
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg'),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v4.dxf", 5000.0, 'seg'),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v5.dxf", 5000.0, 'order'),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
@@ -105,13 +105,17 @@ def cluster(ents, margin=1500.0):
 class Unit:
     pass
 
-def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg'):
+def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', center_fix=None):
     """블록 로컬(또는 임의) 좌표의 엔티티들을 레일/캡/스테이션으로 분류.
     rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션을 캡과 강체 결합(mult_end 1/0).
-    rigid_interp: 중간 피처 배수 보간 좌표계.
+      None이면 SAFE34_v15 방식(전 구간 위치 비례, 끝 정션 포함 전부 위치 배수).
+    rigid_interp: 중간 피처 배수 보간 좌표계 (rigid 모드에서만).
       'seg' = H중점~램프 바깥끝 직선 (3차선: N분기 끝 기준 두 구간 등식 유지)
-      'gap' = 구조물 사이 간격 누적 좌표 (4차선: 모든 구조물 고정 크기,
-              간격들이 각자 길이에 비례해 균일 신축 → 같은 간격은 항상 같게)"""
+      'gap' = 구조물 사이 간격 누적 좌표 (간격 균일 신축)
+    center_fix: 중앙 H분기(중심±CENTER_WIN) 배수를 0.5로 강제(길이 고정).
+      기본값 = rigid 모드에서 True, v15 모드에서도 True 권장(v15 중앙=0.5)."""
+    if center_fix is None:
+        center_fix = True
     u = Unit()
     ys_all = [p[1] for e in ents for p in e['pts']]
     H = max(ys_all) - min(ys_all)
@@ -276,7 +280,14 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg'):
                     feats[-1].append(st)
                 else:
                     feats.append([st])
-            if rigid_interp == 'seg':
+            if rigid_interp == 'order':
+                # SAFE34_v15 방식: 피처 순번 등분 배수 m = 0.5 ± 0.5·(k+1)/(n+1).
+                #   등간격 그리드에 그려진 도면(4차선)이 신축 후에도 등간격 유지.
+                n = len(feats)
+                for k, f in enumerate(feats):
+                    m = 0.5 + 0.5 * (k + 1) / (n + 1) if up else 0.5 - 0.5 * (k + 1) / (n + 1)
+                    for st in f: st['mult_end'] = m
+            elif rigid_interp == 'seg':
                 # H중점(0.5)~끝 스테이션 바깥끝(1.0) 직선: N분기 끝 기준 구간이 좌표 비례 성장
                 ramp = max(rigs, key=lambda s: s['anchor'] if up else -s['anchor'])
                 R = st_band(ramp)[1] if up else st_band(ramp)[0]

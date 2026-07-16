@@ -23,9 +23,11 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v4.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v5.dxf", 5000.0),
     (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
 ]
+# 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
+REDISTRIBUTE = False
 EELB = 450.0 * math.sin(math.radians(45.0))
 TOL = 0.5
 
@@ -800,8 +802,9 @@ def generate(src, prefix, out_path, rigid_end_dist=None):
         dyy = probe.rail_ymin - 450.0
         local = [shift_ent(e, dx, dyy) for e in g]
         for e in local: e['h'] = hgen.new()
-        # 캡 강체 모드: 중앙 H 중점 기준 중간 조인트 등간격 재배치 (지오메트리 이동)
-        mv_log = redistribute_equal_halves(local, rigid_end_dist) if rigid_end_dist else []
+        # ★ 지오메트리 재배치 없음 — 원본 도면 치수 그대로 보존 (사용자 요구).
+        #   등간격이 필요하면 REDISTRIBUTE=True (redistribute_equal_halves 사용).
+        mv_log = redistribute_equal_halves(local, rigid_end_dist) if (rigid_end_dist and REDISTRIBUTE) else []
         u = classify_unit(local, rigid_end_dist)
         H = (u.rail_ymax - u.rail_ymin) + 900.0
         rec = hgen.new(); ins = hgen.new()

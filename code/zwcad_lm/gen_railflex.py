@@ -23,7 +23,7 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v2.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v3.dxf", 5000.0),
     (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
 ]
 EELB = 450.0 * math.sin(math.radians(45.0))
@@ -239,6 +239,29 @@ def classify_unit(ents, rigid_end_dist=None):
                 st['mult_end'] = 1.0; st['rigid'] = 'top'
             elif st['anchor'] - u.capb < rigid_end_dist:
                 st['mult_end'] = 0.0; st['rigid'] = 'bottom'
+    # 캡 강체 모드: 중간 조인트 배수 = 중앙(0.5)~램프(1/0) 선형 보간, 피처(분기 쌍) 단위 통일
+    #   → 신축 중에도 "H분기 중점 기준 구간 등간격"이 유지되고 분기 쌍 내부 간격은 불변
+    if rigid_end_dist is not None:
+        center_y = (u.capb + u.capt) / 2.0
+        r_top = next((s['anchor'] for s in raw_stations if s.get('rigid') == 'top'), None)
+        r_bot = next((s['anchor'] for s in raw_stations if s.get('rigid') == 'bottom'), None)
+        for half, r_a in (('top', r_top), ('bottom', r_bot)):
+            if r_a is None: continue
+            mids = [st for st in raw_stations if not st.get('rigid')
+                    and (st['anchor'] > center_y + 3000.0 if half == 'top'
+                         else st['anchor'] < center_y - 3000.0)]
+            mids.sort(key=lambda s: abs(s['anchor'] - center_y))
+            feats = []
+            for st in mids:
+                if feats and abs(st['anchor'] - feats[-1][-1]['anchor']) < 2000.0:
+                    feats[-1].append(st)
+                else:
+                    feats.append([st])
+            for f in feats:
+                fc = sum(st['anchor'] for st in f) / len(f)
+                m = 0.5 + 0.5 * (fc - center_y) / (r_a - center_y) if half == 'top' \
+                    else 0.5 - 0.5 * (center_y - fc) / (center_y - r_a)
+                for st in f: st['mult_end'] = m
     u.stations = sorted(raw_stations, key=lambda s: s['mult'])
 
     # 내부레일 끝점 배수 (fracstretch), 캡(또는 캡 강체 스테이션)에 붙으면 캡 신축 편입
@@ -657,6 +680,44 @@ def build_unit_objects(u, H, rec, hgen, param_label_off=9782.709112879196):
         lab += 1; fi += 1
     return objs, xdict
 
+def redistribute_equal_halves(local, rigid_end_dist):
+    """중앙 H 중점 기준 등간격 재배치 (3차선 요구): 중앙~끝램프 사이의 중간 조인트
+    피처(간격<2000 체인)들을 [중앙, 램프 anchor] 등분 위치로 강체 이동. local을 직접 수정."""
+    u = classify_unit(local, rigid_end_dist)
+    center_y = (u.capb + u.capt) / 2.0
+    ramps = {st.get('rigid'): st for st in u.stations if st.get('rigid')}
+    if 'top' not in ramps or 'bottom' not in ramps:
+        return []
+    log = []
+    for half in ('top', 'bottom'):
+        ramp_a = ramps[half]['anchor']
+        if half == 'top':
+            mids = [st for st in u.stations if not st.get('rigid') and st['anchor'] > center_y + 3000.0]
+        else:
+            mids = [st for st in u.stations if not st.get('rigid') and st['anchor'] < center_y - 3000.0]
+        if not mids: continue
+        mids.sort(key=lambda s: abs(s['anchor'] - center_y))
+        feats = []
+        for st in mids:
+            if feats and abs(st['anchor'] - feats[-1][-1]['anchor']) < 2000.0:
+                feats[-1].append(st)
+            else:
+                feats.append([st])
+        n = len(feats)
+        for k, f in enumerate(feats):
+            cur = sum(st['anchor'] for st in f) / len(f)
+            tgt = center_y + (k + 1) / (n + 1) * (ramp_a - center_y)
+            d = tgt - cur
+            if abs(d) < 0.01: continue
+            for st in f:
+                for i in st['members']:
+                    e = local[i]
+                    e['pts'] = [(x, y + d) for x, y in e['pts']]
+                    if e['kind'] == 'ARC': e['cy'] += d
+            log.append((half, k, d))
+    return log
+
+
 def prune_orphans(entries):
     """도너에서 물려온 고아 객체 정리: 소유자가 스트립된 XRECORD, 대상 없는 DICTIONARY 항목."""
     changed = True
@@ -735,16 +796,19 @@ def generate(src, prefix, out_path, rigid_end_dist=None):
         dyy = probe.rail_ymin - 450.0
         local = [shift_ent(e, dx, dyy) for e in g]
         for e in local: e['h'] = hgen.new()
+        # 캡 강체 모드: 중앙 H 중점 기준 중간 조인트 등간격 재배치 (지오메트리 이동)
+        mv_log = redistribute_equal_halves(local, rigid_end_dist) if rigid_end_dist else []
         u = classify_unit(local, rigid_end_dist)
         H = (u.rail_ymax - u.rail_ymin) + 900.0
         rec = hgen.new(); ins = hgen.new()
         blocks.append(dict(name=name, rec=rec, ins=ins, local=local, unit=u,
                            insert=(dx, dyy), H=H, row=row_i))
-        st_ms = ['%s%s' % (('R' + s['rigid'][0].upper()) if s.get('rigid') else '%.4f' % s['mult'],
+        st_ms = ['%s%s' % (('R' + s['rigid'][0].upper()) if s.get('rigid') else '%.4f' % s['mult_end'],
                            '*' if s.get('adopted') else '') for s in u.stations]
-        print('  %-16s ins=(%.0f,%.0f) H=%.0f 레일 %d(내부 %d) 스테이션 %d [%s] frac %d 시임 %.0f'
+        mv_s = (' 재배치[' + ','.join('%s%d:%+.0f' % (h[0], k, d) for h, k, d in mv_log) + ']') if mv_log else ''
+        print('  %-16s ins=(%.0f,%.0f) H=%.0f 레일 %d(내부 %d) 스테이션 %d [%s] frac %d 시임 %.0f%s'
               % (name, dx, dyy, H, len(u.fulls) + len(u.inners), len(u.inners),
-                 len(u.stations), ','.join(st_ms), len(u.inner_eps), u.seam))
+                 len(u.stations), ','.join(st_ms), len(u.inner_eps), u.seam, mv_s))
 
     # 다이나믹 객체 생성
     all_objs = {}; xdicts = {}
@@ -831,24 +895,27 @@ def generate(src, prefix, out_path, rigid_end_dist=None):
     return blocks
 
 # ───────────────────────── 검증: 왕복 지오메트리 + 신축 시뮬레이션 ─────────────────────────
-def verify_output(src, out_path):
-    """1) 출력 블록×INSERT 월드좌표 == 원본 모델스페이스  2) 액션 시뮬레이션 연결성"""
-    orig = load_ents(ezdxf.readfile(src).modelspace())
+def verify_output(src, out_path, blocks):
+    """1) 출력 블록 내용 == 생성 시 로컬 지오메트리(재배치 반영) + INSERT 위치
+       2) 총 엔티티 수 == 원본"""
+    orig_n = len(load_ents(ezdxf.readfile(src).modelspace()))
     doc = ezdxf.readfile(out_path)
-    got = []
-    for ins in doc.modelspace().query('INSERT'):
-        ox, oy = ins.dxf.insert.x, ins.dxf.insert.y
-        for e in load_ents(doc.blocks.get(ins.dxf.name)):
-            got.append(shift_ent(e, -ox, -oy))
     def sig(e):
         ps = sorted((round(p[0], 3), round(p[1], 3)) for p in e['pts'])
         return (e['kind'], tuple(ps))
-    so = sorted(sig(e) for e in orig); sg = sorted(sig(e) for e in got)
-    ok = so == sg
-    print('  왕복 지오메트리: %s (원본 %d, 출력 %d)' % ('일치' if ok else '불일치!', len(so), len(sg)))
-    if not ok:
-        miss = [s for s in so if s not in sg][:5]; extra = [s for s in sg if s not in so][:5]
-        print('   누락:', miss); print('   잉여:', extra)
+    ok = True; total = 0
+    ins_pos = {i.dxf.name: (i.dxf.insert.x, i.dxf.insert.y) for i in doc.modelspace().query('INSERT')}
+    for b in blocks:
+        got = load_ents(doc.blocks.get(b['name']))
+        total += len(got)
+        if sorted(map(sig, got)) != sorted(map(sig, b['local'])):
+            ok = False; print('  블록 지오메트리 불일치: %s' % b['name'])
+        px, py = ins_pos.get(b['name'], (None, None))
+        if px is None or abs(px - b['insert'][0]) > 1e-6 or abs(py - b['insert'][1]) > 1e-6:
+            ok = False; print('  INSERT 위치 불일치: %s' % b['name'])
+    if total != orig_n:
+        ok = False
+    print('  왕복 지오메트리: %s (원본 %d, 출력 %d, 재배치 반영)' % ('일치' if ok else '불일치!', orig_n, total))
     return ok
 
 def simulate_block(doc, actions_by_blk, name, driver, direction, delta):
@@ -981,6 +1048,11 @@ if __name__ == '__main__':
     else:
         for src, prefix, out, rigid in INPUTS:
             print('===== %s' % src)
-            generate(src, prefix, out, rigid)
-            verify_output(src, out)
+            try:
+                blocks = generate(src, prefix, out, rigid)
+            except PermissionError:
+                print('  ★ 출력 파일이 잠겨 있어 건너뜀(CAD에서 열림?): %s' % out)
+                print('    디스크의 기존 파일이 최신 코드와 다를 수 있음 — 닫고 재실행 필요')
+                continue
+            verify_output(src, out, blocks)
             simulate_verify(out)

@@ -25,7 +25,7 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_interp: 'seg'(3차선, N분기 끝 두 구간 등식) | 'gap'(4차선, 간격 비율 유지)
 INPUTS = [
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg'),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v3.dxf", 5000.0, 'gap'),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v4.dxf", 5000.0, 'seg'),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False

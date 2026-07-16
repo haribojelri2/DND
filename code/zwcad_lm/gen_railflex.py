@@ -24,12 +24,13 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v2.dxf", 5000.0),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
 EELB = 450.0 * math.sin(math.radians(45.0))
 TOL = 0.5
+CENTER_WIN = 4500.0   # 중앙 H분기 그룹 판정 윈도우 (중심 ± 이 거리)
 
 # ───────────────────────── 지오메트리 모델 ─────────────────────────
 def ent_line(x0, y0, x1, y1, layer, handle=None):
@@ -214,7 +215,7 @@ def classify_unit(ents, rigid_end_dist=None):
     #                  아니면 자체 중심 (비례 성장)
     for st in raw_stations:
         if st['mult'] is not None: continue
-        adopt = None; best = 2500.0
+        adopt = None; adopt_src = None; best = 2500.0
         for j in st['members']:
             for q in ents[j]['pts']:
                 for i in u.inners:
@@ -226,9 +227,9 @@ def classify_unit(ents, rigid_end_dist=None):
                             if d < best:
                                 t = ep_touch.get((i, pi))
                                 if t and t[0] == 'st' and t[1] is not st and t[1]['mult'] is not None:
-                                    best = d; adopt = t[1]['mult']
+                                    best = d; adopt = t[1]['mult']; adopt_src = t[1]
         if adopt is not None:
-            st['mult'] = adopt; st['adopted'] = True
+            st['mult'] = adopt; st['adopted'] = True; st['adopted_from'] = adopt_src
         else:
             pys = [p[1] for i2 in st['members'] for p in ents[i2]['pts']]
             st['anchor'] = sum(pys) / len(pys)
@@ -241,6 +242,12 @@ def classify_unit(ents, rigid_end_dist=None):
                 st['mult_end'] = 1.0; st['rigid'] = 'top'
             elif st['anchor'] - u.capb < rigid_end_dist:
                 st['mult_end'] = 0.0; st['rigid'] = 'bottom'
+    if rigid_end_dist is not None:
+        # 강체 끝 정션에 어댑션된 브릿지(U턴 등, 끝점 부착 lockstep)도 캡과 함께 고정
+        for st in raw_stations:
+            src = st.get('adopted_from')
+            if src is not None and src.get('rigid'):
+                st['rigid'] = src['rigid']; st['mult_end'] = src['mult_end']
     # 캡 강체 모드: 중간 N분기 배수 = 중앙 H중점(0.5)~램프 바깥끝(1/0) 선형 보간.
     #   ★ 기준점 = "N분기 끝"(구조물 밴드의 중앙쪽 끝 = 레일 접점, 사용자 측정 방식).
     #   각 구간(N분기 끝~N분기 끝~H중점)이 그려진 길이에 비례해 성장 → 같게 그려진
@@ -256,8 +263,8 @@ def classify_unit(ents, rigid_end_dist=None):
             if ramp is None: continue
             R = st_band(ramp)[1] if half == 'top' else st_band(ramp)[0]   # 램프 바깥끝
             mids = [st for st in raw_stations if not st.get('rigid')
-                    and (st['anchor'] > center_y + 3000.0 if half == 'top'
-                         else st['anchor'] < center_y - 3000.0)]
+                    and (st['anchor'] > center_y + CENTER_WIN if half == 'top'
+                         else st['anchor'] < center_y - CENTER_WIN)]
             mids.sort(key=lambda s: abs(s['anchor'] - center_y))
             feats = []
             for st in mids:
@@ -273,9 +280,10 @@ def classify_unit(ents, rigid_end_dist=None):
                     bj = max(st_band(st)[1] for st in f)   # 중앙쪽 끝(위끝)
                     m = 0.5 - 0.5 * (center_y - bj) / (center_y - R)
                 for st in f: st['mult_end'] = m
-        # 중앙 H분기(게이트 쌍): 길이 고정 → 전 멤버 0.5로 강체 이동 (중점은 정확히 0.5Δ)
+        # 중앙 H분기: 길이 고정 → 전 멤버 0.5로 강체 이동 (중점은 정확히 0.5Δ).
+        #   4차선의 중앙 H는 ±3836 정션 쌍이라 윈도우 4500 필요 (3차선 게이트는 ±800).
         for st in raw_stations:
-            if not st.get('rigid') and abs(st['anchor'] - center_y) <= 3000.0:
+            if not st.get('rigid') and abs(st['anchor'] - center_y) <= CENTER_WIN:
                 st['mult_end'] = 0.5
     u.stations = sorted(raw_stations, key=lambda s: s['mult'])
 

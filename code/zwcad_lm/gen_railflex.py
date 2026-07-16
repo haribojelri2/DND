@@ -19,9 +19,12 @@ cf = importlib.util.module_from_spec(_spec); sys.modules["cf"] = cf; _spec.loade
 
 V15 = os.path.join(CODE, "zwcad_lm", "dist", "SAFE34_v15.dxf")
 DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
+# (src, 블록 접두어, out, rigid_end_dist)
+#   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
+#   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex.dxf"),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf"),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v2.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
 ]
 EELB = 450.0 * math.sin(math.radians(45.0))
 TOL = 0.5
@@ -98,8 +101,9 @@ def cluster(ents, margin=1500.0):
 class Unit:
     pass
 
-def classify_unit(ents):
-    """블록 로컬(또는 임의) 좌표의 엔티티들을 레일/캡/스테이션으로 분류."""
+def classify_unit(ents, rigid_end_dist=None):
+    """블록 로컬(또는 임의) 좌표의 엔티티들을 레일/캡/스테이션으로 분류.
+    rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션을 캡과 강체 결합(mult_end 1/0)."""
     u = Unit()
     ys_all = [p[1] for e in ents for p in e['pts']]
     H = max(ys_all) - min(ys_all)
@@ -227,9 +231,17 @@ def classify_unit(ents):
             pys = [p[1] for i2 in st['members'] for p in ents[i2]['pts']]
             st['anchor'] = sum(pys) / len(pys)
             st['mult'] = (st['anchor'] - u.capb) / u.span
+    # 끝 스테이션 캡 강체 결합: END 드래그 배수 mult_end (기본 = mult)
+    for st in raw_stations:
+        st['mult_end'] = st['mult']
+        if rigid_end_dist is not None:
+            if u.capt - st['anchor'] < rigid_end_dist:
+                st['mult_end'] = 1.0; st['rigid'] = 'top'
+            elif st['anchor'] - u.capb < rigid_end_dist:
+                st['mult_end'] = 0.0; st['rigid'] = 'bottom'
     u.stations = sorted(raw_stations, key=lambda s: s['mult'])
 
-    # 내부레일 끝점 배수 (fracstretch), 캡에 붙으면 캡 신축 편입
+    # 내부레일 끝점 배수 (fracstretch), 캡(또는 캡 강체 스테이션)에 붙으면 캡 신축 편입
     u.inner_eps = []       # (ent_idx, pt_idx, mult)
     u.inner_cap_top = []   # (ent_idx, pt_idx) 캡 신축에 74=1로 편입
     u.inner_cap_bottom = []
@@ -240,7 +252,12 @@ def classify_unit(ents):
                 p = ents[i]['pts'][pi]
                 u.inner_eps.append((i, pi, (p[1] - u.capb) / u.span))
             elif t[0] == 'st':
-                u.inner_eps.append((i, pi, t[1]['mult']))
+                if t[1].get('rigid') == 'top':
+                    u.inner_cap_top.append((i, pi))
+                elif t[1].get('rigid') == 'bottom':
+                    u.inner_cap_bottom.append((i, pi))
+                else:
+                    u.inner_eps.append((i, pi, t[1]['mult']))
             elif t[0] == 'top':
                 u.inner_cap_top.append((i, pi))
             else:
@@ -612,17 +629,17 @@ def build_unit_objects(u, H, rec, hgen, param_label_off=9782.709112879196):
                                  (minx - 2000.0, maxy + 1000.0, u.seam, miny - 1000.0),
                                  include_vparam=vparam))
 
-    # ── 스테이션 MOVE 쌍 ──
+    # ── 스테이션 MOVE 쌍 ──  (캡 강체 스테이션은 mult_end=1/0)
     lab = 0
     for k, st in enumerate(u.stations):   # END 오름차순
         objs.append(cf.move_action(mv_end[k], graph, mv_exprs[k], '이동%d' % lab,
                                    [hs[i] for i in st['members']],
-                                   x_rail_mid, st['anchor'], 'end', st['mult'], 13))
+                                   x_rail_mid, st['anchor'], 'end', st['mult_end'], 13))
         lab += 1
     for k, st in enumerate(reversed(u.stations)):   # BASE 내림차순(미러)
         objs.append(cf.move_action(mv_base[k], graph, mv_exprs[len(u.stations) + k], '이동%d' % lab,
                                    [hs[i] for i in st['members']],
-                                   x_rail_mid, st['anchor'], 'base', 1.0 - st['mult'], 13))
+                                   x_rail_mid, st['anchor'], 'base', 1.0 - st['mult_end'], 13))
         lab += 1
     # ── 내부레일 끝점 분수 STRETCH ──
     fi = 0
@@ -680,7 +697,7 @@ def prune_orphans(entries):
 
 
 # ───────────────────────── 파일 생성 ─────────────────────────
-def generate(src, prefix, out_path):
+def generate(src, prefix, out_path, rigid_end_dist=None):
     doc = ezdxf.readfile(src)
     world = load_ents(doc.modelspace())
     units_raw = cluster(world)
@@ -718,12 +735,13 @@ def generate(src, prefix, out_path):
         dyy = probe.rail_ymin - 450.0
         local = [shift_ent(e, dx, dyy) for e in g]
         for e in local: e['h'] = hgen.new()
-        u = classify_unit(local)
+        u = classify_unit(local, rigid_end_dist)
         H = (u.rail_ymax - u.rail_ymin) + 900.0
         rec = hgen.new(); ins = hgen.new()
         blocks.append(dict(name=name, rec=rec, ins=ins, local=local, unit=u,
                            insert=(dx, dyy), H=H, row=row_i))
-        st_ms = ['%.4f%s' % (s['mult'], '*' if s.get('adopted') else '') for s in u.stations]
+        st_ms = ['%s%s' % (('R' + s['rigid'][0].upper()) if s.get('rigid') else '%.4f' % s['mult'],
+                           '*' if s.get('adopted') else '') for s in u.stations]
         print('  %-16s ins=(%.0f,%.0f) H=%.0f 레일 %d(내부 %d) 스테이션 %d [%s] frac %d 시임 %.0f'
               % (name, dx, dyy, H, len(u.fulls) + len(u.inners), len(u.inners),
                  len(u.stations), ','.join(st_ms), len(u.inner_eps), u.seam))
@@ -961,8 +979,8 @@ if __name__ == '__main__':
     if mode == 'validate':
         validate_v15()
     else:
-        for src, prefix, out in INPUTS:
+        for src, prefix, out, rigid in INPUTS:
             print('===== %s' % src)
-            generate(src, prefix, out)
+            generate(src, prefix, out, rigid)
             verify_output(src, out)
             simulate_verify(out)

@@ -23,7 +23,7 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v5.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0),
     (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex.dxf", None),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
@@ -241,14 +241,20 @@ def classify_unit(ents, rigid_end_dist=None):
                 st['mult_end'] = 1.0; st['rigid'] = 'top'
             elif st['anchor'] - u.capb < rigid_end_dist:
                 st['mult_end'] = 0.0; st['rigid'] = 'bottom'
-    # 캡 강체 모드: 중간 조인트 배수 = 중앙(0.5)~램프(1/0) 선형 보간, 피처(분기 쌍) 단위 통일
-    #   → 신축 중에도 "H분기 중점 기준 구간 등간격"이 유지되고 분기 쌍 내부 간격은 불변
+    # 캡 강체 모드: 중간 N분기 배수 = 중앙 H중점(0.5)~램프 바깥끝(1/0) 선형 보간.
+    #   ★ 기준점 = "N분기 끝"(구조물 밴드의 중앙쪽 끝 = 레일 접점, 사용자 측정 방식).
+    #   각 구간(N분기 끝~N분기 끝~H중점)이 그려진 길이에 비례해 성장 → 같게 그려진
+    #   구간은 어떤 신축에서도 같게 유지. 피처(분기 쌍 <2000 체인)는 배수 공유(강체).
     if rigid_end_dist is not None:
         center_y = (u.capb + u.capt) / 2.0
-        r_top = next((s['anchor'] for s in raw_stations if s.get('rigid') == 'top'), None)
-        r_bot = next((s['anchor'] for s in raw_stations if s.get('rigid') == 'bottom'), None)
-        for half, r_a in (('top', r_top), ('bottom', r_bot)):
-            if r_a is None: continue
+        def st_band(st):
+            ys = [p[1] for i in st['members'] for p in ents[i]['pts']]
+            return min(ys), max(ys)
+        ramp_top = next((s for s in raw_stations if s.get('rigid') == 'top'), None)
+        ramp_bot = next((s for s in raw_stations if s.get('rigid') == 'bottom'), None)
+        for half, ramp in (('top', ramp_top), ('bottom', ramp_bot)):
+            if ramp is None: continue
+            R = st_band(ramp)[1] if half == 'top' else st_band(ramp)[0]   # 램프 바깥끝
             mids = [st for st in raw_stations if not st.get('rigid')
                     and (st['anchor'] > center_y + 3000.0 if half == 'top'
                          else st['anchor'] < center_y - 3000.0)]
@@ -260,11 +266,14 @@ def classify_unit(ents, rigid_end_dist=None):
                 else:
                     feats.append([st])
             for f in feats:
-                fc = sum(st['anchor'] for st in f) / len(f)
-                m = 0.5 + 0.5 * (fc - center_y) / (r_a - center_y) if half == 'top' \
-                    else 0.5 - 0.5 * (center_y - fc) / (center_y - r_a)
+                if half == 'top':
+                    bj = min(st_band(st)[0] for st in f)   # 중앙쪽 끝(아래끝)
+                    m = 0.5 + 0.5 * (bj - center_y) / (R - center_y)
+                else:
+                    bj = max(st_band(st)[1] for st in f)   # 중앙쪽 끝(위끝)
+                    m = 0.5 - 0.5 * (center_y - bj) / (center_y - R)
                 for st in f: st['mult_end'] = m
-        # 중앙 H분기(게이트 쌍): 길이 고정 요구 → 전 멤버 0.5로 강체 이동
+        # 중앙 H분기(게이트 쌍): 길이 고정 → 전 멤버 0.5로 강체 이동 (중점은 정확히 0.5Δ)
         for st in raw_stations:
             if not st.get('rigid') and abs(st['anchor'] - center_y) <= 3000.0:
                 st['mult_end'] = 0.5

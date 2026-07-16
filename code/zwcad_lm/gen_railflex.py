@@ -26,8 +26,9 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 INPUTS = [
     # (src, prefix, out, rigid_end_dist, rigid_interp, force_center_seam)
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg', False),
-    # 4차선: 세로 = 간격 비례('gap', 구간 1:2:1:2:1 비율 유지) / 가로 = 중앙 시임(H 크로싱 신축)
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v8.dxf", 5000.0, 'gap', True),
+    # 4차선 최종: 세로 = 'tile' 법 (정션 교대 모서리 타일 1:2:1:2:1 등 정수비 영구 보존) /
+    #            가로 = 중앙 시임 + 직선만 신축 (크로싱 꼭짓점에 0길이 직선 삽입 → 자라남)
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v10.dxf", None, 'tile', True),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
@@ -249,6 +250,36 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', force_center_se
     # 끝 스테이션 캡 강체 결합: END 드래그 배수 mult_end (기본 = mult)
     for st in raw_stations:
         st['mult_end'] = st['mult']
+    # ── 'tile' 법 (4차선 최종): 정션들의 교대 모서리(아래끝/위끝, 아래부터 L,H,L,H…)가
+    #   타일 경계 — 도면이 이 타일로 정확한 정수비(1:2:1:2:1 / 2:1:2 / 1:1:2:1:1)로 설계됨.
+    #   경계 배수 = (모서리−capb)/span → 모든 타일이 자기 길이에 비례해 신축(비율 영구 보존).
+    #   비정션(게이트·브릿지)은 이웃 정션 (r,m) 사이 y-선형 보간, 브릿지는 어댑션 유지.
+    if rigid_end_dist is None and rigid_interp == 'tile':
+        def st_band0(st):
+            ys = [p[1] for i in st['members'] for p in ents[i]['pts']]
+            return min(ys), max(ys)
+        juncs = sorted([s for s in raw_stations if s['junction']], key=lambda s: s['anchor'])
+        knots = [(u.capb, 0.0)]
+        for k, st in enumerate(juncs):
+            b = st_band0(st)
+            r = b[0] if k % 2 == 0 else b[1]
+            st['mult_end'] = (r - u.capb) / u.span
+            knots.append((r, st['mult_end']))
+        knots.append((u.capt, 1.0))
+        def interp_m(y):
+            for (y0, m0), (y1, m1) in zip(knots, knots[1:]):
+                if y <= y1 or (y0, m0) == knots[-2]:
+                    if y1 - y0 < 1e-9: return m0
+                    t = min(max((y - y0) / (y1 - y0), 0.0), 1.0)
+                    return m0 + t * (m1 - m0)
+            return 1.0
+        for st in raw_stations:
+            if st['junction']: continue
+            if st.get('adopted_from') is not None:
+                st['mult_end'] = st['adopted_from']['mult_end']
+            else:
+                b = st_band0(st)
+                st['mult_end'] = interp_m((b[0] + b[1]) / 2.0)
         if rigid_end_dist is not None:
             if u.capt - st['anchor'] < rigid_end_dist:
                 st['mult_end'] = 1.0; st['rigid'] = 'top'
@@ -355,7 +386,7 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', force_center_se
                 elif t[1].get('rigid') == 'bottom':
                     u.inner_cap_bottom.append((i, pi))
                 else:
-                    u.inner_eps.append((i, pi, t[1]['mult']))
+                    u.inner_eps.append((i, pi, t[1].get('mult_end', t[1]['mult'])))
             elif t[0] == 'top':
                 u.inner_cap_top.append((i, pi))
             else:
@@ -413,8 +444,12 @@ def width_side(u, e):
         if a1 < a0: a1 += 360.0
         am = math.radians((a0 + a1) / 2.0)
         return ('end', [0, 1]) if e['cx'] + e['r'] * math.cos(am) > u.seam else ('base', [0, 1])
-    s0 = e['pts'][0][0] >= u.seam - 0.5
-    s1 = e['pts'][1][0] >= u.seam - 0.5
+    p0, p1 = e['pts']
+    if abs(p0[0] - p1[0]) < 0.5 and abs(p0[1] - p1[1]) < 0.5 and abs(p0[0] - u.seam) < 10.0:
+        # 시임 위 0길이 직선(크로싱 꼭짓점): 가로 신축으로 자라남
+        return ('cross', 0, 1)
+    s0 = p0[0] >= u.seam - 0.5
+    s1 = p1[0] >= u.seam - 0.5
     if s0 and s1: return ('end', [0, 1])
     if not s0 and not s1: return ('base', [0, 1])
     return ('cross', 0 if s0 else 1, 1 if s0 else 0)
@@ -763,6 +798,29 @@ def build_unit_objects(u, H, rec, hgen, param_label_off=9782.709112879196):
         lab += 1; fi += 1
     return objs, xdict
 
+def add_apex_lines(local):
+    """호 두 개가 꼭짓점에서 직접 만나는 크로싱(U-게이트)에 0길이 가로 직선 삽입.
+    가로 신축 시 이 직선이 자라나 크로싱이 연결된 채 벌어짐 (2차선 W900의
+    detect_w900_zero_lines와 같은 기법). 반환: 추가된 엔티티 수."""
+    pts = {}
+    for i, e in enumerate(local):
+        if e['kind'] != 'ARC': continue
+        for p in e['pts']:
+            pts.setdefault((round(p[0], 1), round(p[1], 1)), []).append(i)
+    added = 0
+    for (x, y), idxs in pts.items():
+        if len(idxs) != 2: continue
+        a, b = local[idxs[0]], local[idxs[1]]
+        # 꼭짓점 조건: 두 호 모두 중심 x가 접점 x와 일치(수직 접선점) + 서로 반대쪽으로 벌어짐
+        if abs(a['cx'] - x) > 1.0 or abs(b['cx'] - x) > 1.0: continue
+        ax = [p[0] for p in a['pts'] if abs(p[0] - x) > 1.0]
+        bx = [p[0] for p in b['pts'] if abs(p[0] - x) > 1.0]
+        if not ax or not bx or (ax[0] < x) == (bx[0] < x): continue
+        local.append(dict(kind='LINE', pts=[(x, y), (x, y)], layer=a['layer'], h=None))
+        added += 1
+    return added
+
+
 def redistribute_equal_halves(local, rigid_end_dist):
     """중앙 H 중점 기준 등간격 재배치 (3차선 요구): 중앙~끝램프 사이의 중간 조인트
     피처(간격<2000 체인)들을 [중앙, 램프 anchor] 등분 위치로 강체 이동. local을 직접 수정."""
@@ -878,6 +936,7 @@ def generate(src, prefix, out_path, rigid_end_dist=None, rigid_interp='seg', for
         dx = left_full_x - 900.0
         dyy = probe.rail_ymin - 450.0
         local = [shift_ent(e, dx, dyy) for e in g]
+        n_apex = add_apex_lines(local) if force_center_seam else 0
         for e in local: e['h'] = hgen.new()
         # ★ 지오메트리 재배치 없음 — 원본 도면 치수 그대로 보존 (사용자 요구).
         #   등간격이 필요하면 REDISTRIBUTE=True (redistribute_equal_halves 사용).
@@ -991,7 +1050,10 @@ def verify_output(src, out_path, blocks):
     ins_pos = {i.dxf.name: (i.dxf.insert.x, i.dxf.insert.y) for i in doc.modelspace().query('INSERT')}
     for b in blocks:
         got = load_ents(doc.blocks.get(b['name']))
-        total += len(got)
+        total += sum(1 for e in got
+                     if not (e['kind'] == 'LINE'
+                             and math.hypot(e['pts'][1][0] - e['pts'][0][0],
+                                            e['pts'][1][1] - e['pts'][0][1]) < 0.5))
         if sorted(map(sig, got)) != sorted(map(sig, b['local'])):
             ok = False; print('  블록 지오메트리 불일치: %s' % b['name'])
         px, py = ins_pos.get(b['name'], (None, None))
@@ -1108,26 +1170,32 @@ def simulate_verify(out_path):
     fails = 0
     for name in names:
         base = load_ents(doc.blocks.get(name))
-        # 원 연결쌍: 끝점이 상대 몸통 위에 있는 쌍
-        adj = []
+        # 원 연결: 끝점 → 그 점이 닿아 있던 상대들의 집합 (신축 후 하나 이상 유지되면 OK —
+        # 꼭짓점처럼 여러 객체가 한 점에 겹친 경우 각자 제 짝을 찾아가면 정상)
+        adj = defaultdict(list)
         for i, e in enumerate(base):
             for j, f in enumerate(base):
                 if i == j: continue
                 for pi in (0, 1):
                     if pt_on(f, e['pts'][pi]):
-                        adj.append((i, pi, j))
+                        adj[(i, pi)].append(j)
         for driver, d, delta in [(1, 'end', (0, 3000)), (1, 'base', (0, -3000)),
                                  (50, 'end', (1000, 0)), (50, 'base', (-1000, 0))]:
             _b, moved = simulate_block(doc, acts, name, driver, d, delta)
             bad = 0
-            for i, pi, j in adj:
-                if driver == 50 and base[i]['kind'] == 'ARC' and base[j]['kind'] == 'ARC':
-                    # 중앙 갭 U-크로싱: 반쪽 호가 좌우로 갈라지는 꼭짓점 분리는 의도된 동작
-                    di = moved[i]['pts'][pi][0] - base[i]['pts'][pi][0]
-                    dj0 = moved[j]['pts'][0][0] - base[j]['pts'][0][0]
-                    if abs(di - dj0) > 1e-6:
-                        continue
-                if not pt_on(moved[j], moved[i]['pts'][pi], tol=1.0):
+            for (i, pi), js in adj.items():
+                kept = False
+                for j in js:
+                    if driver == 50 and base[i]['kind'] == 'ARC' and base[j]['kind'] == 'ARC':
+                        # 중앙 갭 U-크로싱: 반쪽 호끼리의 꼭짓점 분리는 이 쌍만 무시
+                        # (꼭짓점 0길이 직선과의 접촉이 유지되는지는 계속 검사)
+                        di = moved[i]['pts'][pi][0] - base[i]['pts'][pi][0]
+                        dj0 = moved[j]['pts'][0][0] - base[j]['pts'][0][0]
+                        if abs(di - dj0) > 1e-6:
+                            continue
+                    if pt_on(moved[j], moved[i]['pts'][pi], tol=1.0):
+                        kept = True; break
+                if not kept:
                     bad += 1
             if bad:
                 fails += 1

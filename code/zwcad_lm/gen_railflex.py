@@ -27,7 +27,7 @@ INPUTS = [
     # (src, prefix, out, rigid_end_dist, rigid_interp, force_center_seam)
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg', False),
     # 4차선: 세로 = 간격 비례('gap', 구간 1:2:1:2:1 비율 유지) / 가로 = 중앙 시임(H 크로싱 신축)
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v7.dxf", 5000.0, 'gap', True),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v8.dxf", 5000.0, 'gap', True),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
@@ -401,21 +401,22 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', force_center_se
 
 def width_side(u, e):
     """거리2 신축 멤버십: ('end',spec)|('base',spec)|('cross',idx_end,idx_base).
-    끝점 기준 판정(동률 x==seam은 END 쪽). 시임을 가로지르는 엔티티(바·대각선·U-호 반쪽)는
-    양쪽 액션에 74=1로 갈라 넣음 — U-호는 꼭짓점 끝점이 신축되어 크로싱이 연결 유지한 채
-    벌어짐(STRETCH의 호 끝점 신축 동작)."""
+    ★ 호(강체)는 절대 변형하지 않음 — 시임에서 먼 끝점 쪽으로 통째 배정
+      (중앙 갭 U-크로싱: 반쪽 호가 각자 자기 레일과 함께 이동, 꼭짓점에서 분리).
+    직선만 시임을 가로지르면 양쪽 액션에 74=1로 갈라 신축."""
+    if e['kind'] == 'ARC':
+        far = max(e['pts'], key=lambda p: abs(p[0] - u.seam))
+        if abs(far[0] - u.seam) > 0.5:
+            return ('end', [0, 1]) if far[0] > u.seam else ('base', [0, 1])
+        # 두 끝점 모두 시임 위(퇴화): 몸통 중앙점으로 판정
+        a0, a1 = e['a0'], e['a1']
+        if a1 < a0: a1 += 360.0
+        am = math.radians((a0 + a1) / 2.0)
+        return ('end', [0, 1]) if e['cx'] + e['r'] * math.cos(am) > u.seam else ('base', [0, 1])
     s0 = e['pts'][0][0] >= u.seam - 0.5
     s1 = e['pts'][1][0] >= u.seam - 0.5
     if s0 and s1: return ('end', [0, 1])
-    if not s0 and not s1:
-        if e['kind'] == 'ARC':
-            # 끝점은 왼쪽인데 몸통이 시임을 넘는 호 방지: 몸통 중앙점 확인
-            a0, a1 = e['a0'], e['a1']
-            if a1 < a0: a1 += 360.0
-            am = math.radians((a0 + a1) / 2.0)
-            if e['cx'] + e['r'] * math.cos(am) >= u.seam - 0.5:
-                return ('end', [0, 1])
-        return ('base', [0, 1])
+    if not s0 and not s1: return ('base', [0, 1])
     return ('cross', 0 if s0 else 1, 1 if s0 else 0)
 
 def vertical_coverage(u):
@@ -1120,6 +1121,12 @@ def simulate_verify(out_path):
             _b, moved = simulate_block(doc, acts, name, driver, d, delta)
             bad = 0
             for i, pi, j in adj:
+                if driver == 50 and base[i]['kind'] == 'ARC' and base[j]['kind'] == 'ARC':
+                    # 중앙 갭 U-크로싱: 반쪽 호가 좌우로 갈라지는 꼭짓점 분리는 의도된 동작
+                    di = moved[i]['pts'][pi][0] - base[i]['pts'][pi][0]
+                    dj0 = moved[j]['pts'][0][0] - base[j]['pts'][0][0]
+                    if abs(di - dj0) > 1e-6:
+                        continue
                 if not pt_on(moved[j], moved[i]['pts'][pi], tol=1.0):
                     bad += 1
             if bad:

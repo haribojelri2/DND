@@ -24,8 +24,10 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
 #   rigid_interp: 'seg'(3차선, N분기 끝 두 구간 등식) | 'gap'(4차선, 간격 비율 유지)
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg'),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v6.dxf", 5000.0, 'order'),
+    # (src, prefix, out, rigid_end_dist, rigid_interp, force_center_seam)
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg', False),
+    # 4차선: 세로 = 간격 비례('gap', 구간 1:2:1:2:1 비율 유지) / 가로 = 중앙 시임(H 크로싱 신축)
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v7.dxf", 5000.0, 'gap', True),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
@@ -107,17 +109,16 @@ def cluster(ents, margin=1500.0):
 class Unit:
     pass
 
-def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', center_fix=None):
+def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', force_center_seam=False):
     """블록 로컬(또는 임의) 좌표의 엔티티들을 레일/캡/스테이션으로 분류.
     rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션을 캡과 강체 결합(mult_end 1/0).
-      None이면 SAFE34_v15 방식(전 구간 위치 비례, 끝 정션 포함 전부 위치 배수).
     rigid_interp: 중간 피처 배수 보간 좌표계 (rigid 모드에서만).
-      'seg' = H중점~램프 바깥끝 직선 (3차선: N분기 끝 기준 두 구간 등식 유지)
-      'gap' = 구조물 사이 간격 누적 좌표 (간격 균일 신축)
-    center_fix: 중앙 H분기(중심±CENTER_WIN) 배수를 0.5로 강제(길이 고정).
-      기본값 = rigid 모드에서 True, v15 모드에서도 True 권장(v15 중앙=0.5)."""
-    if center_fix is None:
-        center_fix = True
+      'seg'   = H중점~램프 바깥끝 직선 (3차선: N분기 끝 기준 두 구간 등식 유지)
+      'gap'   = 구조물 사이 간격 누적 좌표 — 구조물 크기 불변, 간격이 자기 길이에
+                비례해 신축 → 그려진 간격 비율(4차선 1:2:1:2:1) 영원히 유지
+      'order' = 순번 등분 배수 (모든 간격 동일량 성장)
+    force_center_seam: 거리2 시임을 중앙 갭 중점에 고정 (4차선: H분기 가로 크로싱이
+      꼭짓점 신축으로 늘어남). False면 호 몸통 없는 자유 구간 자동 탐색."""
     u = Unit()
     ys_all = [p[1] for e in ents for p in e['pts']]
     H = max(ys_all) - min(ys_all)
@@ -376,6 +377,9 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', center_fix=None
     gi0 = (n + 1) // 2
     order = [gi0] + [gi0 + k for k in range(1, n - gi0)] + [gi0 - k for k in range(1, gi0)]
     u.seam = (u.rail_xs[gi0 - 1] + u.rail_xs[gi0]) / 2.0
+    if force_center_seam:
+        # 4차선: H분기 가로 크로싱(중앙 갭)이 늘어나야 함 — U-호는 끝점 신축으로 처리
+        return u
     for gi in order:
         lo, hi = u.rail_xs[gi - 1] + MARG, u.rail_xs[gi] - MARG
         if hi <= lo: continue
@@ -396,18 +400,22 @@ def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg', center_fix=None
     return u
 
 def width_side(u, e):
-    """거리2 신축 멤버십: ('end',spec)|('base',spec)|('cross',idx_end,idx_base)"""
-    if e['kind'] == 'ARC':
-        # 호는 몸통(각도 중앙점) 위치로 판정 — 시임 위 중심(U-호)의 float 동전던지기 방지
-        a0, a1 = e['a0'], e['a1']
-        if a1 < a0: a1 += 360.0
-        am = math.radians((a0 + a1) / 2.0)
-        mx = e['cx'] + e['r'] * math.cos(am)
-        return ('end', [0, 1]) if mx > u.seam else ('base', [0, 1])
-    s0 = e['pts'][0][0] > u.seam
-    s1 = e['pts'][1][0] > u.seam
+    """거리2 신축 멤버십: ('end',spec)|('base',spec)|('cross',idx_end,idx_base).
+    끝점 기준 판정(동률 x==seam은 END 쪽). 시임을 가로지르는 엔티티(바·대각선·U-호 반쪽)는
+    양쪽 액션에 74=1로 갈라 넣음 — U-호는 꼭짓점 끝점이 신축되어 크로싱이 연결 유지한 채
+    벌어짐(STRETCH의 호 끝점 신축 동작)."""
+    s0 = e['pts'][0][0] >= u.seam - 0.5
+    s1 = e['pts'][1][0] >= u.seam - 0.5
     if s0 and s1: return ('end', [0, 1])
-    if not s0 and not s1: return ('base', [0, 1])
+    if not s0 and not s1:
+        if e['kind'] == 'ARC':
+            # 끝점은 왼쪽인데 몸통이 시임을 넘는 호 방지: 몸통 중앙점 확인
+            a0, a1 = e['a0'], e['a1']
+            if a1 < a0: a1 += 360.0
+            am = math.radians((a0 + a1) / 2.0)
+            if e['cx'] + e['r'] * math.cos(am) >= u.seam - 0.5:
+                return ('end', [0, 1])
+        return ('base', [0, 1])
     return ('cross', 0 if s0 else 1, 1 if s0 else 0)
 
 def vertical_coverage(u):
@@ -832,7 +840,7 @@ def prune_orphans(entries):
 
 
 # ───────────────────────── 파일 생성 ─────────────────────────
-def generate(src, prefix, out_path, rigid_end_dist=None, rigid_interp='seg'):
+def generate(src, prefix, out_path, rigid_end_dist=None, rigid_interp='seg', force_center_seam=False):
     doc = ezdxf.readfile(src)
     world = load_ents(doc.modelspace())
     units_raw = cluster(world)
@@ -873,7 +881,7 @@ def generate(src, prefix, out_path, rigid_end_dist=None, rigid_interp='seg'):
         # ★ 지오메트리 재배치 없음 — 원본 도면 치수 그대로 보존 (사용자 요구).
         #   등간격이 필요하면 REDISTRIBUTE=True (redistribute_equal_halves 사용).
         mv_log = redistribute_equal_halves(local, rigid_end_dist) if (rigid_end_dist and REDISTRIBUTE) else []
-        u = classify_unit(local, rigid_end_dist, rigid_interp)
+        u = classify_unit(local, rigid_end_dist, rigid_interp, force_center_seam)
         H = (u.rail_ymax - u.rail_ymin) + 900.0
         rec = hgen.new(); ins = hgen.new()
         blocks.append(dict(name=name, rec=rec, ins=ins, local=local, unit=u,
@@ -1014,10 +1022,11 @@ def simulate_block(doc, actions_by_blk, name, driver, direction, delta):
             pts = [(pts[k][0] + mv[k][0], pts[k][1] + mv[k][1]) for k in (0, 1)]
         ne = dict(e); ne['pts'] = pts
         if e['kind'] == 'ARC' and mv:
-            # 호는 항상 통째 이동(양끝 동일 변위) — 검증
-            assert abs(mv[0][0] - mv[1][0]) < 1e-6 and abs(mv[0][1] - mv[1][1]) < 1e-6, \
-                '%s 호 부분이동!' % e['h']
-            ne['cx'] = e['cx'] + mv[0][0]; ne['cy'] = e['cy'] + mv[0][1]
+            if abs(mv[0][0] - mv[1][0]) < 1e-6 and abs(mv[0][1] - mv[1][1]) < 1e-6:
+                ne['cx'] = e['cx'] + mv[0][0]; ne['cy'] = e['cy'] + mv[0][1]
+            else:
+                # 호 끝점 신축(STRETCH 호 변형: U-호 꼭짓점 이동) — 근사적으로 현으로 취급
+                ne['deformed'] = True
         out.append(ne)
     return ents, out
 
@@ -1069,6 +1078,12 @@ def parse_out_actions(out_path):
     return out
 
 def pt_on(e, p, tol=1.0):
+    if e.get('deformed'):
+        # 신축으로 변형된 호: 현(양 끝점 잇는 선분)으로 근사 + 끝점 근접 허용
+        a, b = e['pts']
+        if math.hypot(p[0] - a[0], p[1] - a[1]) < tol or math.hypot(p[0] - b[0], p[1] - b[1]) < tol:
+            return True
+        return pt_on(dict(kind='LINE', pts=e['pts']), p, tol=max(tol, 460.0))
     if e['kind'] == 'LINE':
         a, b = e['pts']
         ax, ay = a; bx, by = b; px, py = p
@@ -1121,10 +1136,10 @@ if __name__ == '__main__':
     if mode == 'validate':
         validate_v15()
     else:
-        for src, prefix, out, rigid, interp in INPUTS:
+        for src, prefix, out, rigid, interp, cseam in INPUTS:
             print('===== %s' % src)
             try:
-                blocks = generate(src, prefix, out, rigid, interp)
+                blocks = generate(src, prefix, out, rigid, interp, cseam)
             except PermissionError:
                 print('  ★ 출력 파일이 잠겨 있어 건너뜀(CAD에서 열림?): %s' % out)
                 print('    디스크의 기존 파일이 최신 코드와 다를 수 있음 — 닫고 재실행 필요')

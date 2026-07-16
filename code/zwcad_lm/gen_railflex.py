@@ -19,12 +19,13 @@ cf = importlib.util.module_from_spec(_spec); sys.modules["cf"] = cf; _spec.loade
 
 V15 = os.path.join(CODE, "zwcad_lm", "dist", "SAFE34_v15.dxf")
 DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
-# (src, 블록 접두어, out, rigid_end_dist)
+# (src, 블록 접두어, out, rigid_end_dist, rigid_interp)
 #   rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션(진출입 램프)은 캡과 함께 강체 이동
 #   (배율 END=1/0, BASE=0/1) → 캡~램프 구간(흰색 마킹)이 신축되지 않음. None=비활성.
+#   rigid_interp: 'seg'(3차선, N분기 끝 두 구간 등식) | 'gap'(4차선, 간격 비율 유지)
 INPUTS = [
-    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v2.dxf", 5000.0),
+    (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg'),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v3.dxf", 5000.0, 'gap'),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
@@ -104,9 +105,13 @@ def cluster(ents, margin=1500.0):
 class Unit:
     pass
 
-def classify_unit(ents, rigid_end_dist=None):
+def classify_unit(ents, rigid_end_dist=None, rigid_interp='seg'):
     """블록 로컬(또는 임의) 좌표의 엔티티들을 레일/캡/스테이션으로 분류.
-    rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션을 캡과 강체 결합(mult_end 1/0)."""
+    rigid_end_dist: 캡에서 이 거리 안의 끝 스테이션을 캡과 강체 결합(mult_end 1/0).
+    rigid_interp: 중간 피처 배수 보간 좌표계.
+      'seg' = H중점~램프 바깥끝 직선 (3차선: N분기 끝 기준 두 구간 등식 유지)
+      'gap' = 구조물 사이 간격 누적 좌표 (4차선: 모든 구조물 고정 크기,
+              간격들이 각자 길이에 비례해 균일 신축 → 같은 간격은 항상 같게)"""
     u = Unit()
     ys_all = [p[1] for e in ents for p in e['pts']]
     H = max(ys_all) - min(ys_all)
@@ -257,13 +262,12 @@ def classify_unit(ents, rigid_end_dist=None):
         def st_band(st):
             ys = [p[1] for i in st['members'] for p in ents[i]['pts']]
             return min(ys), max(ys)
-        ramp_top = next((s for s in raw_stations if s.get('rigid') == 'top'), None)
-        ramp_bot = next((s for s in raw_stations if s.get('rigid') == 'bottom'), None)
-        for half, ramp in (('top', ramp_top), ('bottom', ramp_bot)):
-            if ramp is None: continue
-            R = st_band(ramp)[1] if half == 'top' else st_band(ramp)[0]   # 램프 바깥끝
+        for half in ('top', 'bottom'):
+            up = half == 'top'
+            rigs = [s for s in raw_stations if s.get('rigid') == half]
+            if not rigs: continue
             mids = [st for st in raw_stations if not st.get('rigid')
-                    and (st['anchor'] > center_y + CENTER_WIN if half == 'top'
+                    and (st['anchor'] > center_y + CENTER_WIN if up
                          else st['anchor'] < center_y - CENTER_WIN)]
             mids.sort(key=lambda s: abs(s['anchor'] - center_y))
             feats = []
@@ -272,14 +276,48 @@ def classify_unit(ents, rigid_end_dist=None):
                     feats[-1].append(st)
                 else:
                     feats.append([st])
-            for f in feats:
-                if half == 'top':
-                    bj = min(st_band(st)[0] for st in f)   # 중앙쪽 끝(아래끝)
-                    m = 0.5 + 0.5 * (bj - center_y) / (R - center_y)
+            if rigid_interp == 'seg':
+                # H중점(0.5)~끝 스테이션 바깥끝(1.0) 직선: N분기 끝 기준 구간이 좌표 비례 성장
+                ramp = max(rigs, key=lambda s: s['anchor'] if up else -s['anchor'])
+                R = st_band(ramp)[1] if up else st_band(ramp)[0]
+                for f in feats:
+                    if up:
+                        bj = min(st_band(st)[0] for st in f)   # 중앙쪽 끝(아래끝)
+                        m = 0.5 + 0.5 * (bj - center_y) / (R - center_y)
+                    else:
+                        bj = max(st_band(st)[1] for st in f)   # 중앙쪽 끝(위끝)
+                        m = 0.5 - 0.5 * (center_y - bj) / (center_y - R)
+                    for st in f: st['mult_end'] = m
+            else:
+                # 'gap': 간격 누적 좌표. 중앙 구조물 바깥끝(0.5) → 고정존 안쪽끝(1/0).
+                #   모든 구조물(중앙 H·피처·고정존)은 크기 불변, 간격만 길이 비례 균일 신축.
+                cen_sts = [s for s in raw_stations if not s.get('rigid')
+                           and abs(s['anchor'] - center_y) <= CENTER_WIN]
+                if cen_sts:
+                    C = max(st_band(s)[1] for s in cen_sts) if up \
+                        else min(st_band(s)[0] for s in cen_sts)
                 else:
-                    bj = max(st_band(st)[1] for st in f)   # 중앙쪽 끝(위끝)
-                    m = 0.5 - 0.5 * (center_y - bj) / (center_y - R)
-                for st in f: st['mult_end'] = m
+                    C = center_y
+                Z = min(st_band(s)[0] for s in rigs) if up \
+                    else max(st_band(s)[1] for s in rigs)   # 고정존 안쪽끝
+                bands = []
+                for f in feats:
+                    b0 = min(st_band(st)[0] for st in f)
+                    b1 = max(st_band(st)[1] for st in f)
+                    bands.append((b0, b1))
+                bands.sort(key=lambda b: b[0] if up else -b[1])
+                gaps = []; prev = C
+                for b0, b1 in bands:
+                    gaps.append(abs((b0 if up else b1) - prev))
+                    prev = b1 if up else b0
+                gaps.append(abs(Z - prev))
+                total = sum(gaps)
+                cum = 0.0
+                for f, gp in zip(sorted(feats, key=lambda f: abs(f[0]['anchor'] - center_y)),
+                                 gaps[:-1]):
+                    cum += gp
+                    m = 0.5 + 0.5 * cum / total if up else 0.5 - 0.5 * cum / total
+                    for st in f: st['mult_end'] = m
         # 중앙 H분기: 길이 고정 → 전 멤버 0.5로 강체 이동 (중점은 정확히 0.5Δ).
         #   4차선의 중앙 H는 ±3836 정션 쌍이라 윈도우 4500 필요 (3차선 게이트는 ±800).
         for st in raw_stations:
@@ -781,7 +819,7 @@ def prune_orphans(entries):
 
 
 # ───────────────────────── 파일 생성 ─────────────────────────
-def generate(src, prefix, out_path, rigid_end_dist=None):
+def generate(src, prefix, out_path, rigid_end_dist=None, rigid_interp='seg'):
     doc = ezdxf.readfile(src)
     world = load_ents(doc.modelspace())
     units_raw = cluster(world)
@@ -822,7 +860,7 @@ def generate(src, prefix, out_path, rigid_end_dist=None):
         # ★ 지오메트리 재배치 없음 — 원본 도면 치수 그대로 보존 (사용자 요구).
         #   등간격이 필요하면 REDISTRIBUTE=True (redistribute_equal_halves 사용).
         mv_log = redistribute_equal_halves(local, rigid_end_dist) if (rigid_end_dist and REDISTRIBUTE) else []
-        u = classify_unit(local, rigid_end_dist)
+        u = classify_unit(local, rigid_end_dist, rigid_interp)
         H = (u.rail_ymax - u.rail_ymin) + 900.0
         rec = hgen.new(); ins = hgen.new()
         blocks.append(dict(name=name, rec=rec, ins=ins, local=local, unit=u,
@@ -1070,10 +1108,10 @@ if __name__ == '__main__':
     if mode == 'validate':
         validate_v15()
     else:
-        for src, prefix, out, rigid in INPUTS:
+        for src, prefix, out, rigid, interp in INPUTS:
             print('===== %s' % src)
             try:
-                blocks = generate(src, prefix, out, rigid)
+                blocks = generate(src, prefix, out, rigid, interp)
             except PermissionError:
                 print('  ★ 출력 파일이 잠겨 있어 건너뜀(CAD에서 열림?): %s' % out)
                 print('    디스크의 기존 파일이 최신 코드와 다를 수 있음 — 닫고 재실행 필요')

@@ -25,13 +25,15 @@ DONOR = os.path.join(CODE, "2차선_H분기_직선등간격 (1).dxf")
 #   rigid_interp: 'seg'(3차선, N분기 끝 두 구간 등식) | 'gap'(4차선, 간격 비율 유지)
 INPUTS = [
     (r"C:\Users\User\Downloads\3차선_수정.dxf", "rail3", r"C:\Users\User\Downloads\3차선_수정_flex_v6.dxf", 5000.0, 'seg'),
-    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v5.dxf", 5000.0, 'order'),
+    (r"C:\Users\User\Downloads\4차선_수정.dxf", "rail4", r"C:\Users\User\Downloads\4차선_수정_flex_v6.dxf", 5000.0, 'order'),
 ]
 # 중간 조인트 등간격 재배치(지오메트리 이동) 여부 — 원본 치수 보존 요구로 비활성.
 REDISTRIBUTE = False
 EELB = 450.0 * math.sin(math.radians(45.0))
 TOL = 0.5
-CENTER_WIN = 4500.0   # 중앙 H분기 그룹 판정 윈도우 (중심 ± 이 거리)
+# 중앙 H분기(게이트 쌍, 길이고정 대상) 판정 윈도우. 게이트는 중심±800~950.
+# 4500이면 4차선의 중앙 정션 쌍(±3836)까지 삼켜 그 사이 간격이 신축 불가가 됨 → 3000.
+CENTER_WIN = 3000.0
 
 # ───────────────────────── 지오메트리 모델 ─────────────────────────
 def ent_line(x0, y0, x1, y1, layer, handle=None):

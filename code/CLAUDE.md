@@ -60,6 +60,25 @@ DXF file
   → save_map()                             # map_exporter.py → *.map with STB T-nodes
 ```
 
+### Module-based branch judgment (module_judge.py)
+
+Drawings made with the RailPlugin "Module" tab carry, per block reference, XData `RAILPLUGIN`
+`[Real L, Int16 module idx, Int16 kind=7, Real W, Int16 lanes, Real R, Real A]` (block name `RAILMOD_<NAME>_R.._L..[_W..][_A..]`).
+`config.json > module_judgment.mode`: `auto` (default — use module info when any module is present, else the geometric path),
+`on`, `off`. In module mode **no geometric branch detection runs** — the three judgment inputs come from modules:
+
+- ori export `precomputed_merge_groups` (arch W ≤ 2R+50 → U, cross → N) with `emit_line_arc_line_u_links=False`
+- `insert_clearance_nodes(..., module_judgment={u_pairs, n_pairs, lr_arcs, corner_arcs})` — skips its detection block
+  (`if not _module_mode:`), the degree-based L/R loop, the arc-arc/arc-line-arc scans and the post-rebuild U rescan;
+  only the placement rules (J1/J2/J3, 350 offsets, driving nodes) run
+- final export groups from `ModuleJudge.final_merge_groups` (arch W < 1601 → U, cross → N), computed after the CW flip
+
+Module ↔ edge binding is positional (mirror of `ModuleGeom.Build` in world coords: arc centre/radius/angle span, collinear
+lines), done once after `unify_edge_directions`; later stages follow the same Edge objects. Module entities bypass the
+colour/layer rail filter. Outputs `<stem>_modules.csv` (per-module type, R/L/W/A, judgment, notes, spacing warnings).
+Regression rule: a drawing without modules must give byte-identical maps to the geometric path (260410: ori `2e605d35…`,
+final `6792d1a5…`). Synthetic test drawings: `python module_testdxf.py <out_dir>`.
+
 ### Module Responsibilities
 
 - **core.py** — Data classes (`LineSeg`, `ArcSeg`, `Edge`, `MapNode`, `MapLink`) and math utilities.

@@ -107,11 +107,15 @@ def collect_entities_recursive(
     doc,
     rail_color: Optional[int] = None,
     rail_layers: Optional[List[str]] = None,
+    module_bypass_filter: bool = False,
 ) -> Tuple[List[LineSeg], List[ArcSeg]]:
     """모델공간 전체: LINE/ARC, LWPOLYLINE·POLYLINE(bulge→LINE/ARC 분해). INSERT는 virtual_entities(WCS).
 
     rail_color와 rail_layers는 AND 조건으로 적용됨.
     둘 다 지정 시 색상·레이어 모두 일치해야 추출. 각각 None이면 해당 조건은 무시.
+
+    module_bypass_filter=True 이면 플러그인 기본 모듈 블록(module_judge.is_module_insert)의 선·호는
+    색상·레이어 필터와 무관하게 레일로 읽는다(모듈 자체가 레일이라는 정보). 모듈 판정 모드에서 사용.
 
     반환
     ----
@@ -192,7 +196,8 @@ def collect_entities_recursive(
         except Exception:
             return True
 
-    def dispatch(ent, parent_color: Optional[int] = None, depth: int = 0, block_ctx: str = ""):
+    def dispatch(ent, parent_color: Optional[int] = None, depth: int = 0, block_ctx: str = "",
+                 force: bool = False):
         et = ent.dxftype()
 
         if et == "INSERT":
@@ -205,14 +210,16 @@ def collect_entities_recursive(
             else:
                 c = _resolve_color(ent, doc)
             block_name = str(getattr(ent.dxf, "name", "") or "")
+            child_force = force or (module_bypass_filter and _is_module_insert(ent))
             # 장비 블록(SPLINE/CIRCLE/ELLIPSE 포함)은 레일 추출 대상에서 제외
-            if _is_equipment_block(block_name):
+            if not child_force and _is_equipment_block(block_name):
                 return
             # 리프 블록(중첩 INSERT 없음)만 color 상속, 컨테이너 블록은 상속 안 함
             child_parent = c if _is_leaf_block(block_name) else None
             try:
                 for ve in ent.virtual_entities():
-                    dispatch(ve, parent_color=child_parent, depth=depth + 1, block_ctx=block_name)
+                    dispatch(ve, parent_color=child_parent, depth=depth + 1, block_ctx=block_name,
+                             force=child_force)
             except Exception:
                 pass
             return
@@ -224,9 +231,9 @@ def collect_entities_recursive(
             c = parent_color
         else:
             c = _resolve_color(ent, doc)
-        if rail_color is not None and c != rail_color:
+        if not force and rail_color is not None and c != rail_color:
             return
-        if _rail_layers_set is not None and layer_name not in _rail_layers_set:
+        if not force and _rail_layers_set is not None and layer_name not in _rail_layers_set:
             return
 
         if DEBUG_DXF and rail_color is not None:
@@ -242,12 +249,16 @@ def collect_entities_recursive(
         elif et == "LWPOLYLINE":
             from ezdxf.render.polyline import virtual_lwpolyline_entities
             for ve in virtual_lwpolyline_entities(ent):
-                dispatch(ve, parent_color=c, depth=depth)
+                dispatch(ve, parent_color=c, depth=depth, force=force)
         elif et == "POLYLINE":
             from ezdxf.render.polyline import virtual_polyline_entities
             for ve in virtual_polyline_entities(ent):
                 if ve.dxftype() in ("LINE", "ARC"):
-                    dispatch(ve, parent_color=c, depth=depth)
+                    dispatch(ve, parent_color=c, depth=depth, force=force)
+
+    _is_module_insert = None
+    if module_bypass_filter:
+        from module_judge import is_module_insert as _is_module_insert
 
     msp = doc.modelspace()
     for e in msp:

@@ -15,6 +15,7 @@ from topology import insert_clearance_nodes
 from port_extractor import extract_stb_ports, collect_port_nodes_by_color
 from part_counter import (count_parts, count_geometry, save_parts_csv,
                           summary_text, print_table)
+from module_judge import ModuleJudge, decide_modules
 
 # ---------------------------------------------------------
 # config 로드
@@ -67,7 +68,11 @@ PORT_COLORS = _cf.get("port_colors") or []
 RAIL_LAYERS = _cf.get("rail_layers") or None  # [] → None (필터 없음)
 
 doc = ezdxf.readfile(str(DXF_PATH))
-lines, arcs = collect_entities_recursive(doc, rail_color=RAIL_COLOR, rail_layers=RAIL_LAYERS)
+# 분기 판정 방식: CAD 에 플러그인 기본 모듈이 있으면 모듈 정보로 판정(형상 추정 안 함) — gui.py 와 동일
+_modules, _mmsg = decide_modules(doc, _cfg)
+print(_mmsg)
+lines, arcs = collect_entities_recursive(doc, rail_color=RAIL_COLOR, rail_layers=RAIL_LAYERS,
+                                         module_bypass_filter=_modules is not None)
 if RAIL_COLOR is not None or RAIL_LAYERS:
     print(f"레일 필터링 완료: LINE {len(lines)}개, ARC {len(arcs)}개")
 edges_raw_no_split_no_unify = build_edges_raw_no_split_no_unify(lines, arcs)
@@ -79,6 +84,10 @@ split_lines = merge_line_segments_at_degree2_nodes(split_lines, arcs, tol=SNAP_T
 all_segments = split_lines + arcs
 all_segments = clean_edges(all_segments)
 unified_edges = unify_edge_directions(all_segments, tolerance=INTER_MERGE_TOL, start_direction="CCW")
+mjudge = None
+if _modules is not None:
+    mjudge = ModuleJudge(_modules, _cfg, tol=INTER_MERGE_TOL)
+    mjudge.bind(unified_edges)      # 모듈 ↔ 엣지 대응(위치 대조). 이후 단계는 같은 엣지 객체를 따라간다
 
 # ---------------------------------------------------------
 # 대기 노드 적용 전 원본 저장 (CW이면 반전 후 저장, 탐지를 위해 복원)
@@ -98,6 +107,9 @@ nodes, links = export_map_from_unified_edges(
     u_x_threshold_mm=ORI_U_X_THRESHOLD_MM,  # =2R+50. ori는 tight 호-호 U만 (호직호·반지름 큰 U 제외). 최종 맵은 1601로 별도 기준
     line_arc_line_u_radius_mm=RAIL_ARC_RADIUS_MM,
     line_arc_line_u_radius_tol_mm=RAIL_ARC_RADIUS_TOL_MM,
+    # 모듈 판정: U/N 병합을 모듈에서 받고, 형상 U 탐지(직-호-직)는 끈다
+    precomputed_merge_groups=(mjudge.ori_merge_groups(unified_edges) if mjudge else None),
+    emit_line_arc_line_u_links=(mjudge is None),
 )
 _extra_ori = collect_port_nodes_by_color(doc, PORT_COLORS)
 stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1, extra_port_nodes=_extra_ori)
@@ -114,17 +126,23 @@ if DIRECTION.upper() == "CW":
 # ---------------------------------------------------------
 # U/N 분기 ARC 인덱스를 먼저 식별한 뒤 clearance node 삽입
 
-merge_groups = find_un_branch_merge_groups(
-    unified_edges,
-    INTER_MERGE_TOL,
-    SHORT_STRAIGHT_THRESHOLD,
-    scale_to_mm=SCALE_TO_MM,
-    n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
-    n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
-    u_branch_arc_sum_target_mm=U_BRANCH_ARC_SUM_TARGET_MM,
-)
-n_arc_pairs = [indices for indices, branch_type in merge_groups if branch_type == "N"]
-u_arc_pairs = [indices for indices, branch_type in merge_groups if branch_type == "U"]
+if mjudge is not None:
+    # 모듈 판정: U/N 링크·일반 분기 호(분기/합류)·단순 통과 곡선 호를 모듈에서 받는다
+    _mj_cats = mjudge.clearance_inputs(unified_edges)
+    n_arc_pairs, u_arc_pairs = _mj_cats["n_pairs"], _mj_cats["u_pairs"]
+else:
+    _mj_cats = None
+    merge_groups = find_un_branch_merge_groups(
+        unified_edges,
+        INTER_MERGE_TOL,
+        SHORT_STRAIGHT_THRESHOLD,
+        scale_to_mm=SCALE_TO_MM,
+        n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
+        n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
+        u_branch_arc_sum_target_mm=U_BRANCH_ARC_SUM_TARGET_MM,
+    )
+    n_arc_pairs = [indices for indices, branch_type in merge_groups if branch_type == "N"]
+    u_arc_pairs = [indices for indices, branch_type in merge_groups if branch_type == "U"]
 
 unified_edges, intra_arm_u_idx, complex_lr_flat, plain_arc_flat, graph_scan_u_pair_objs = insert_clearance_nodes(
     unified_edges,
@@ -132,40 +150,43 @@ unified_edges, intra_arm_u_idx, complex_lr_flat, plain_arc_flat, graph_scan_u_pa
     n_arc_indices=n_arc_pairs,
     u_arc_indices=u_arc_pairs,
     cfg=_cfg,
+    module_judgment=_mj_cats,
 )
-merge_groups_x = find_un_branch_merge_groups_by_x(
-    unified_edges,
-    INTER_MERGE_TOL,
-    SHORT_STRAIGHT_THRESHOLD,
-    scale_to_mm=SCALE_TO_MM,
-    n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
-    n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
-    u_x_threshold_mm=1601.0,  # 폭 1600 미만만 U (clearance 단계와 동일 기준)
-    # 복합분기로 이미 처리된 호(cflat) 등을 U 탐색 후보에서 제외 — 인접 U의 짝을
-    # 가로채 잘못된 쌍을 만들고 그 U가 누락되는 비대칭 버그 방지
-    exclude_indices=set(complex_lr_flat) | set(intra_arm_u_idx) | set(plain_arc_flat),
-)
+merge_groups_x = []     # 모듈 판정이면 CW 반전 뒤 모듈에서 만든다(아래)
+if mjudge is None:
+    merge_groups_x = find_un_branch_merge_groups_by_x(
+        unified_edges,
+        INTER_MERGE_TOL,
+        SHORT_STRAIGHT_THRESHOLD,
+        scale_to_mm=SCALE_TO_MM,
+        n_branch_min_arc_sweep_deg=N_BRANCH_MIN_ARC_SWEEP_DEG,
+        n_branch_diagonal_axis_tol_deg=N_BRANCH_DIAGONAL_AXIS_TOL_DEG,
+        u_x_threshold_mm=1601.0,  # 폭 1600 미만만 U (clearance 단계와 동일 기준)
+        # 복합분기로 이미 처리된 호(cflat) 등을 U 탐색 후보에서 제외 — 인접 U의 짝을
+        # 가로채 잘못된 쌍을 만들고 그 U가 누락되는 비대칭 버그 방지
+        exclude_indices=set(complex_lr_flat) | set(intra_arm_u_idx) | set(plain_arc_flat),
+    )
 
-merge_groups_x = [
-    (indices, btype) for indices, btype in merge_groups_x
-    if not any(idx in intra_arm_u_idx for idx in indices)
-    and not any(idx in complex_lr_flat for idx in indices)
-    and not any(idx in plain_arc_flat for idx in indices)
-]
+    merge_groups_x = [
+        (indices, btype) for indices, btype in merge_groups_x
+        if not any(idx in intra_arm_u_idx for idx in indices)
+        and not any(idx in complex_lr_flat for idx in indices)
+        and not any(idx in plain_arc_flat for idx in indices)
+    ]
 
-# 그래프 스캔 U 쌍(topology에서 탐지)을 post-clearance 인덱스로 변환해 직접 추가
-_id_to_post_idx = {id(e): j for j, e in enumerate(unified_edges)}
-_existing_covered = set(idx for idxs, _ in merge_groups_x for idx in idxs)
-for _pair_objs in graph_scan_u_pair_objs:
-    _idxs = tuple(_id_to_post_idx.get(id(e)) for e in _pair_objs)
-    if any(idx is None for idx in _idxs):
-        continue
-    if any(idx in _existing_covered for idx in _idxs):
-        continue
-    if any(idx in intra_arm_u_idx or idx in complex_lr_flat or idx in plain_arc_flat for idx in _idxs):
-        continue
-    merge_groups_x.append((_idxs, "U"))
-    _existing_covered.update(_idxs)
+    # 그래프 스캔 U 쌍(topology에서 탐지)을 post-clearance 인덱스로 변환해 직접 추가
+    _id_to_post_idx = {id(e): j for j, e in enumerate(unified_edges)}
+    _existing_covered = set(idx for idxs, _ in merge_groups_x for idx in idxs)
+    for _pair_objs in graph_scan_u_pair_objs:
+        _idxs = tuple(_id_to_post_idx.get(id(e)) for e in _pair_objs)
+        if any(idx is None for idx in _idxs):
+            continue
+        if any(idx in _existing_covered for idx in _idxs):
+            continue
+        if any(idx in intra_arm_u_idx or idx in complex_lr_flat or idx in plain_arc_flat for idx in _idxs):
+            continue
+        merge_groups_x.append((_idxs, "U"))
+        _existing_covered.update(_idxs)
 
 # CW 방향이면 모든 탐지 완료 후 반전 + 인덱스 재매핑
 if DIRECTION.upper() == "CW":
@@ -181,6 +202,8 @@ if DIRECTION.upper() == "CW":
         (tuple(N - 1 - idx for idx in reversed(idxs)), btype)
         for idxs, btype in merge_groups_x
     ]
+if mjudge is not None:
+    merge_groups_x = mjudge.final_merge_groups(unified_edges)
 
 nodes, links = export_map_from_unified_edges(
     unified_edges,
@@ -191,6 +214,7 @@ nodes, links = export_map_from_unified_edges(
     precomputed_merge_groups=merge_groups_x,
     line_arc_line_u_radius_mm=RAIL_ARC_RADIUS_MM,
     line_arc_line_u_radius_tol_mm=RAIL_ARC_RADIUS_TOL_MM,
+    emit_line_arc_line_u_links=(mjudge is None),
     header="#LSL - Jcolab",
 )
 
@@ -214,6 +238,21 @@ save_map(
     ports=stb_ports,
 )
 print(f"[완료] {MAP_OUT} 저장됨")
+_self_loops = sum(1 for _l in links if _l.start_node_id == _l.end_node_id)
+if _self_loops:
+    print(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 — 대기 노드 두 개가 "
+          f"{INTER_MERGE_TOL:.0f}mm 안에 겹침(분기·곡선 사이 직선이 짧음)")
+
+# 모듈 판정 보고: 모듈별 종류·R/L/W/A·판정 결과·확인 필요 사항
+if mjudge is not None:
+    for _ln in mjudge.summary_lines():
+        print(_ln)
+    MODULES_OUT = DXF_PATH.parent / (DXF_PATH.stem + "_modules.csv")
+    try:
+        mjudge.save_csv(str(MODULES_OUT))
+        print(f"[모듈] 저장됨: {MODULES_OUT}")
+    except OSError as _e:
+        print(f"[경고] 모듈 CSV 저장 실패({_e.strerror}): {MODULES_OUT}")
 
 # 정형화 부품 수량 집계 (플러그인으로 작도한 도면일 때만 산출)
 #  ※ 부가 산출물이므로 실패해도 map 변환 결과는 그대로 살린다.

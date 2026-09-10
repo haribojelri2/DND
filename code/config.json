@@ -69,6 +69,24 @@
     "min_length": "주행 노드 삽입 최소 링크 길이 (mm)",
     "min_segment": "주행 노드 최소 구간 길이 (mm)"
   },
+  "module_judgment": {
+    "mode": "auto",
+    "u_width_max_mm": 1601.0,
+    "ori_u_extra_mm": 50.0,
+    "match_center_tol_mm": 100.0,
+    "match_radius_tol_mm": 10.0,
+    "match_point_tol_mm": 110.0,
+    "angle_margin_deg": 25.0
+  },
+  "module_judgment_comments": {
+    "mode": "분기 판정 방식. auto=도면에 플러그인 기본 모듈이 있으면 모듈 정보로 판정(형상 추정 안 함), 없으면 기존 형상 판정 / on=항상 모듈 판정 / off=항상 기존 형상 판정",
+    "u_width_max_mm": "아치 모듈(U·DOUBLE BRANCH·U BRANCH) 폭 W 가 이 값 미만이면 U분기 (node.pptx 슬라이드 9 'X<1600')",
+    "ori_u_extra_mm": "원본(ori) 맵은 W ≤ 2R + 이 값 인 아치만 U 로 병합 (반원만 — 기존 ori 기준 유지)",
+    "match_center_tol_mm": "모듈 호 ↔ 도면 호 대조: 중심 허용 오차 (mm). 좌표 스냅(snap_tol)만큼 움직일 수 있다",
+    "match_radius_tol_mm": "모듈 호 ↔ 도면 호 대조: 반지름 허용 오차 (mm)",
+    "match_point_tol_mm": "모듈 직선 ↔ 도면 직선 대조: 허용 오차 (mm)",
+    "angle_margin_deg": "모듈 호 ↔ 도면 호 대조: 각 범위 여유 (도)"
+  },
   "color_filter": {
     "rail_color": null,
     "port_colors": [],

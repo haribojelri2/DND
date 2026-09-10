@@ -312,7 +312,8 @@ def apply_arc_exit_tangent_to_incident_lines(edges, tolerance=INTER_MERGE_TOL):
             apply_line_direction_rule_from_arc(line_edge, arc_edge, junc, tolerance)
 
 
-def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_indices=None, cfg=None):
+def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_indices=None, cfg=None,
+                           module_judgment=None):
     """
     AGV 대기 노드 삽입 — PPT (슬라이드 1~9) 규칙 적용.
 
@@ -395,299 +396,553 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         in_edges[_v(e.end)].append((i, e))
         out_edges[_v(e.start)].append((i, e))
 
-    # --- [1단계] 복합분기(L/R 쌍) 탐지 — 가장 먼저 수행 ---
-    # 조건:
-    #   1) diverge junction at arc.start (inLINE=1, inARC=0, outLINE=1, outARC=1)
-    #   2) outgoing LINE 끝이 merge junction (inLINE=1, inARC=1, outLINE=1, outARC=0)
-    #   3) div_arc.end → (BFS, top_line 제외) → mer_arc.start 경로 존재
-    # 탐지된 arc에는 플래그(_complex_lr_flat)를 부여, 이후 모든 탐색에서 제외
+    # 모듈 판정 모드(module_judgment 가 주어짐): CAD 에 배치된 모듈 정보(module_judge.py)로
+    #  분기 종류·접합점이 이미 정해져 들어온다. 아래 [1단계]·[2단계] 형상 분기 판정은 통째로 건너뛰고
+    #  배치 규칙(J1/J2/J3·이격·주행 노드)만 적용한다. 판정 입력:
+    #    u_arc_indices / n_arc_indices = 모듈의 U·N 링크 엣지 튜플(진행순)
+    #    module_judgment["lr_arcs"]     = [(호 인덱스, "diverge"|"merge")] 일반 분기 호
+    #    module_judgment["corner_arcs"] = [호 인덱스] 단순 통과 곡선 호
+    _module_mode = module_judgment is not None
+    if not _module_mode:
+        # --- [1단계] 복합분기(L/R 쌍) 탐지 — 가장 먼저 수행 ---
+        # 조건:
+        #   1) diverge junction at arc.start (inLINE=1, inARC=0, outLINE=1, outARC=1)
+        #   2) outgoing LINE 끝이 merge junction (inLINE=1, inARC=1, outLINE=1, outARC=0)
+        #   3) div_arc.end → (BFS, top_line 제외) → mer_arc.start 경로 존재
+        # 탐지된 arc에는 플래그(_complex_lr_flat)를 부여, 이후 모든 탐색에서 제외
 
-    def _collect_arm_edge_path(start_vkey, target_vkey, exclude_edge_idx, exclude_set=None):
-        """BFS로 start_vkey → target_vkey 경로 (edge index 순서 리스트) 반환 (top LINE 및 exclude_set 제외)."""
-        from collections import deque
-        _excl = exclude_set or set()
-        visited = {start_vkey}
-        q = deque([(start_vkey, [])])
-        while q:
-            cur, path = q.popleft()
-            for ei, ee in out_edges.get(cur, []):
-                if ei == exclude_edge_idx or ei in _excl:
-                    continue
-                nv = _v(ee.end)
-                new_path = path + [ei]
-                if nv == target_vkey:
-                    return new_path
-                if nv not in visited:
-                    visited.add(nv)
-                    q.append((nv, new_path))
-        return []
-
-    def _find_shortest_undirected_path(start_v, end_v, exclude_edges):
-        from collections import deque
-        q = deque([(start_v, [])])
-        visited = {start_v}
-        while q:
-            cur, path = q.popleft()
-            if cur == end_v:
-                return path
-            for ei, ee in out_edges.get(cur, []):
-                if ei in exclude_edges:
-                    continue
-                nv = _v(ee.end)
-                if nv not in visited:
-                    visited.add(nv)
-                    q.append((nv, path + [ei]))
-            for ei, ee in in_edges.get(cur, []):
-                if ei in exclude_edges:
-                    continue
-                nv = _v(ee.start)
-                if nv not in visited:
-                    visited.add(nv)
-                    q.append((nv, path + [ei]))
-        return None
-
-    _complex_lr_pairs = []        # (diverge_arc_idx, merge_arc_idx, top_line_idx, arm_path) — X>=1601
-    _small_x_complex_lr_pairs = []  # 같은 구조인데 X<1601 — U 노드 규칙 적용
-    _struct_complex_lr_pairs = []   # div_arc-div_line-inner-arm-inner-merge_line-merge_arc-main_line
-    _u_arm_pairs = []             # arm이 단일 U(분할된 두 호)인 복합분기. arm은 U분기로 유지(흡수X)
-    _small_x_no_arm_pairs = []    # arm=[] X<1601 — U가 처리하되 흡수는 여기서
-    _u_no_arm_pairs = []          # same-direction no-arm X<1601 — 순수 U분기(단일 U링크 유지, plain_arc 제외)
-    _plain_no_arm_pairs = []      # arm=[] X>=1601 — 일반 호직호(복합 아님). plain_arc로 처리
-    _complex_lr_flat = set()  # 복합분기 arc 인덱스 플래그
-    _intra_arm_u_idx = set()  # arm 내부 U 아크 (개별 U/L/R 처리 없음 — 복합분기가 전체 담당)
-    _already_paired = set()
-    _line_center_plain_pairs = []  # LINE 중심으로 먼저 확정한 일반 호-직-호. U 루프에는 넣지 않음.
-
-    # [사전] 그래프에서 X <= 1600 U 아크 인덱스 미리 수집 — 복합분기 탐지 전에 확보
-    _U_X_PRE = 1601.0
-    _pre_u_idx = set(idx for pair in (u_arc_indices or []) for idx in pair)
-    for _i, _arc in enumerate(unified_edges):
-        if _arc.edge_type != "ARC" or _i in _pre_u_idx:
-            continue
-        _ve = _v(_arc.end)
-        for _j, _ne in out_edges.get(_ve, []):
-            if _j in _pre_u_idx:
-                continue
-            if _ne.edge_type == "ARC":
-                if dist(_arc.start, _ne.end) < _U_X_PRE:
-                    _pre_u_idx.add(_i)
-                    _pre_u_idx.add(_j)
-                break
-            elif _ne.edge_type == "LINE":
-                _vm = _v(_ne.end)
-                for _k, _te in out_edges.get(_vm, []):
-                    if _k in _pre_u_idx or _k == _i:
+        def _collect_arm_edge_path(start_vkey, target_vkey, exclude_edge_idx, exclude_set=None):
+            """BFS로 start_vkey → target_vkey 경로 (edge index 순서 리스트) 반환 (top LINE 및 exclude_set 제외)."""
+            from collections import deque
+            _excl = exclude_set or set()
+            visited = {start_vkey}
+            q = deque([(start_vkey, [])])
+            while q:
+                cur, path = q.popleft()
+                for ei, ee in out_edges.get(cur, []):
+                    if ei == exclude_edge_idx or ei in _excl:
                         continue
-                    if _te.edge_type == "ARC":
-                        if dist(_arc.start, _te.end) < _U_X_PRE:
-                            _pre_u_idx.add(_i)
-                            _pre_u_idx.add(_j)
-                            _pre_u_idx.add(_k)
-                    break
-                break
+                    nv = _v(ee.end)
+                    new_path = path + [ei]
+                    if nv == target_vkey:
+                        return new_path
+                    if nv not in visited:
+                        visited.add(nv)
+                        q.append((nv, new_path))
+            return []
 
-    _nu_branch_idx = _pre_u_idx | set(idx for pair in (n_arc_indices or []) for idx in pair)
-    _n_arc_idx_set = set(idx for pair in (n_arc_indices or []) for idx in pair)
-    _preserve_line_arc_u_idx = set()
-    try:
-        from map_exporter import line_arc_line_u_edge_indices_for_export as _lal_u_idx
-        _bd_cfg = (cfg or {}).get("branch_detection", {})
-        _preserve_line_arc_u_idx = _lal_u_idx(
-            unified_edges,
-            tol,
-            scale_to_mm=float(_bd_cfg.get("scale_to_mm", 1.0)),
-            radius_target_mm=float(_bd_cfg.get(
-                "rail_arc_radius_mm", _bd_cfg.get("line_arc_line_u_radius_mm", 480.0))),
-            radius_tol_mm=float(_bd_cfg.get(
-                "rail_arc_radius_tol_mm", _bd_cfg.get("line_arc_line_u_radius_tol_mm", 5.0))),
-            abs_sa_ea_tol_deg=float(_bd_cfg.get("line_arc_line_u_abs_sa_ea_tol_deg", 5.0)),
-            exclude_edge_indices=set(),
-        )
-    except Exception:
-        _preserve_line_arc_u_idx = set()
+        def _find_shortest_undirected_path(start_v, end_v, exclude_edges):
+            from collections import deque
+            q = deque([(start_v, [])])
+            visited = {start_v}
+            while q:
+                cur, path = q.popleft()
+                if cur == end_v:
+                    return path
+                for ei, ee in out_edges.get(cur, []):
+                    if ei in exclude_edges:
+                        continue
+                    nv = _v(ee.end)
+                    if nv not in visited:
+                        visited.add(nv)
+                        q.append((nv, path + [ei]))
+                for ei, ee in in_edges.get(cur, []):
+                    if ei in exclude_edges:
+                        continue
+                    nv = _v(ee.start)
+                    if nv not in visited:
+                        visited.add(nv)
+                        q.append((nv, path + [ei]))
+            return None
 
-    def _is_u_arc(idx):
-        """아크가 X<1600 U 쌍에 속하는지 양방향 전수 확인 (pre-scan 누락 보완)."""
-        ae = unified_edges[idx]
-        if ae.edge_type != "ARC":
-            return False
-        # arc1 역할: forward — ae.end 이후 모든 이웃 검사
-        ve = _v(ae.end)
-        for _bj, _be in out_edges.get(ve, []):
-            if _be.edge_type == "ARC":
-                if dist(ae.start, _be.end) < _U_X_PRE:
-                    return True
-                # X >= 1600이어도 break 없이 다음 이웃 계속 검사
-            elif _be.edge_type == "LINE":
-                _vm = _v(_be.end)
-                for _ck, _ce in out_edges.get(_vm, []):
-                    if _ce.edge_type == "ARC":
-                        if dist(ae.start, _ce.end) < _U_X_PRE:
-                            return True
-                        break  # LINE 뒤 첫 ARC만 검사
+        _complex_lr_pairs = []        # (diverge_arc_idx, merge_arc_idx, top_line_idx, arm_path) — X>=1601
+        _small_x_complex_lr_pairs = []  # 같은 구조인데 X<1601 — U 노드 규칙 적용
+        _struct_complex_lr_pairs = []   # div_arc-div_line-inner-arm-inner-merge_line-merge_arc-main_line
+        _u_arm_pairs = []             # arm이 단일 U(분할된 두 호)인 복합분기. arm은 U분기로 유지(흡수X)
+        _small_x_no_arm_pairs = []    # arm=[] X<1601 — U가 처리하되 흡수는 여기서
+        _u_no_arm_pairs = []          # same-direction no-arm X<1601 — 순수 U분기(단일 U링크 유지, plain_arc 제외)
+        _plain_no_arm_pairs = []      # arm=[] X>=1601 — 일반 호직호(복합 아님). plain_arc로 처리
+        _complex_lr_flat = set()  # 복합분기 arc 인덱스 플래그
+        _intra_arm_u_idx = set()  # arm 내부 U 아크 (개별 U/L/R 처리 없음 — 복합분기가 전체 담당)
+        _already_paired = set()
+        _line_center_plain_pairs = []  # LINE 중심으로 먼저 확정한 일반 호-직-호. U 루프에는 넣지 않음.
+
+        # [사전] 그래프에서 X <= 1600 U 아크 인덱스 미리 수집 — 복합분기 탐지 전에 확보
+        _U_X_PRE = 1601.0
+        _pre_u_idx = set(idx for pair in (u_arc_indices or []) for idx in pair)
+        for _i, _arc in enumerate(unified_edges):
+            if _arc.edge_type != "ARC" or _i in _pre_u_idx:
+                continue
+            _ve = _v(_arc.end)
+            for _j, _ne in out_edges.get(_ve, []):
+                if _j in _pre_u_idx:
+                    continue
+                if _ne.edge_type == "ARC":
+                    if dist(_arc.start, _ne.end) < _U_X_PRE:
+                        _pre_u_idx.add(_i)
+                        _pre_u_idx.add(_j)
                     break
-        # arc2 역할: backward — ae.start 이전 모든 이웃 검사
-        vs = _v(ae.start)
-        for _bj, _be in in_edges.get(vs, []):
-            if _be.edge_type == "ARC":
-                if dist(_be.start, ae.end) < _U_X_PRE:
-                    return True
-            elif _be.edge_type == "LINE":
-                _vm = _v(_be.start)
-                for _ck, _ce in in_edges.get(_vm, []):
-                    if _ce.edge_type == "ARC":
-                        if dist(_ce.start, ae.end) < _U_X_PRE:
-                            return True
+                elif _ne.edge_type == "LINE":
+                    _vm = _v(_ne.end)
+                    for _k, _te in out_edges.get(_vm, []):
+                        if _k in _pre_u_idx or _k == _i:
+                            continue
+                        if _te.edge_type == "ARC":
+                            if dist(_arc.start, _te.end) < _U_X_PRE:
+                                _pre_u_idx.add(_i)
+                                _pre_u_idx.add(_j)
+                                _pre_u_idx.add(_k)
                         break
                     break
-        return False
 
-    def _incident_edges(vkey, edge_type, exclude):
-        found = []
-        for ei, ee in out_edges.get(vkey, []):
-            if ei in exclude:
-                continue
-            if ee.edge_type == edge_type:
-                found.append((ei, ee, _v(ee.end)))
-        for ei, ee in in_edges.get(vkey, []):
-            if ei in exclude:
-                continue
-            if ee.edge_type == edge_type:
-                found.append((ei, ee, _v(ee.start)))
-        return found
+        _nu_branch_idx = _pre_u_idx | set(idx for pair in (n_arc_indices or []) for idx in pair)
+        _n_arc_idx_set = set(idx for pair in (n_arc_indices or []) for idx in pair)
+        _preserve_line_arc_u_idx = set()
+        try:
+            from map_exporter import line_arc_line_u_edge_indices_for_export as _lal_u_idx
+            _bd_cfg = (cfg or {}).get("branch_detection", {})
+            _preserve_line_arc_u_idx = _lal_u_idx(
+                unified_edges,
+                tol,
+                scale_to_mm=float(_bd_cfg.get("scale_to_mm", 1.0)),
+                radius_target_mm=float(_bd_cfg.get(
+                    "rail_arc_radius_mm", _bd_cfg.get("line_arc_line_u_radius_mm", 480.0))),
+                radius_tol_mm=float(_bd_cfg.get(
+                    "rail_arc_radius_tol_mm", _bd_cfg.get("line_arc_line_u_radius_tol_mm", 5.0))),
+                abs_sa_ea_tol_deg=float(_bd_cfg.get("line_arc_line_u_abs_sa_ea_tol_deg", 5.0)),
+                exclude_edge_indices=set(),
+            )
+        except Exception:
+            _preserve_line_arc_u_idx = set()
 
-    def _line_between_vkeys(v1, v2, exclude):
-        for ei, ee, other_v in _incident_edges(v1, "LINE", exclude):
-            if other_v == v2:
-                return ei, ee
-        return None, None
+        def _is_u_arc(idx):
+            """아크가 X<1600 U 쌍에 속하는지 양방향 전수 확인 (pre-scan 누락 보완)."""
+            ae = unified_edges[idx]
+            if ae.edge_type != "ARC":
+                return False
+            # arc1 역할: forward — ae.end 이후 모든 이웃 검사
+            ve = _v(ae.end)
+            for _bj, _be in out_edges.get(ve, []):
+                if _be.edge_type == "ARC":
+                    if dist(ae.start, _be.end) < _U_X_PRE:
+                        return True
+                    # X >= 1600이어도 break 없이 다음 이웃 계속 검사
+                elif _be.edge_type == "LINE":
+                    _vm = _v(_be.end)
+                    for _ck, _ce in out_edges.get(_vm, []):
+                        if _ce.edge_type == "ARC":
+                            if dist(ae.start, _ce.end) < _U_X_PRE:
+                                return True
+                            break  # LINE 뒤 첫 ARC만 검사
+                        break
+            # arc2 역할: backward — ae.start 이전 모든 이웃 검사
+            vs = _v(ae.start)
+            for _bj, _be in in_edges.get(vs, []):
+                if _be.edge_type == "ARC":
+                    if dist(_be.start, ae.end) < _U_X_PRE:
+                        return True
+                elif _be.edge_type == "LINE":
+                    _vm = _v(_be.start)
+                    for _ck, _ce in in_edges.get(_vm, []):
+                        if _ce.edge_type == "ARC":
+                            if dist(_ce.start, ae.end) < _U_X_PRE:
+                                return True
+                            break
+                        break
+            return False
 
-    def _arc_pair_adjacent(div_arc, mer_arc):
-        """div_arc.end와 mer_arc.start가 직접 맞닿거나 LINE 1개로 연결된 진짜 호(직)호 쌍인지.
-        본선 레인 세그먼트를 사이에 두고 멀리 떨어진 무관한 div/mer 호 오탐(서로 다른
-        캡·전환선의 호를 짝지음 → plain_arc_flat 오염으로 U 병합 차단, 이격 비대칭)을 걸러낸다."""
-        if dist(div_arc.end, mer_arc.start) <= tol:
-            return True
-        for _ci, _ce in out_edges.get(_v(div_arc.end), []):
-            if _ce.edge_type == "LINE" and dist(_ce.end, mer_arc.start) <= tol:
-                return True
-        for _ci, _ce in in_edges.get(_v(mer_arc.start), []):
-            if _ce.edge_type == "LINE" and dist(_ce.start, div_arc.end) <= tol:
-                return True
-        return False
-
-    def _find_true_arc_line_arc(i, div_arc):
-        """div_arc.end → LINE 1개 → ARC 체인(진짜 호직호 파트너) 탐색.
-        반환: (mid_line_idx, partner_idx) 또는 (None, None)."""
-        for _mi, _me in out_edges.get(_v(div_arc.end), []):
-            if _me.edge_type != "LINE" or _mi in _complex_lr_flat:
-                continue
-            for _pi, _pe in out_edges.get(_v(_me.end), []):
-                if _pi == i or _pe.edge_type != "ARC":
+        def _incident_edges(vkey, edge_type, exclude):
+            found = []
+            for ei, ee in out_edges.get(vkey, []):
+                if ei in exclude:
                     continue
-                if _pi in _n_arc_idx_set or _pi in _already_paired or _pi in _complex_lr_flat:
+                if ee.edge_type == edge_type:
+                    found.append((ei, ee, _v(ee.end)))
+            for ei, ee in in_edges.get(vkey, []):
+                if ei in exclude:
                     continue
-                return _mi, _pi
-        return None, None
+                if ee.edge_type == edge_type:
+                    found.append((ei, ee, _v(ee.start)))
+            return found
 
-    def _register_true_pair_or_skip(i, div_arc):
-        """오탐(비인접) div/mer 쌍 대신 진짜 호직호 파트너를 찾아 등록.
-        폭>=1601이면 plain(이격+대칭 J1), <1601이면 등록 없이 U 파이프라인에 위임."""
-        _mi2, _pi2 = _find_true_arc_line_arc(i, div_arc)
-        if _pi2 is not None:
-            _tX = dist(div_arc.start, unified_edges[_pi2].end)
-            if _tX >= 1601.0:
-                _plain_no_arm_pairs.append((i, _pi2, _mi2))
+        def _line_between_vkeys(v1, v2, exclude):
+            for ei, ee, other_v in _incident_edges(v1, "LINE", exclude):
+                if other_v == v2:
+                    return ei, ee
+            return None, None
+
+        def _arc_pair_adjacent(div_arc, mer_arc):
+            """div_arc.end와 mer_arc.start가 직접 맞닿거나 LINE 1개로 연결된 진짜 호(직)호 쌍인지.
+            본선 레인 세그먼트를 사이에 두고 멀리 떨어진 무관한 div/mer 호 오탐(서로 다른
+            캡·전환선의 호를 짝지음 → plain_arc_flat 오염으로 U 병합 차단, 이격 비대칭)을 걸러낸다."""
+            if dist(div_arc.end, mer_arc.start) <= tol:
+                return True
+            for _ci, _ce in out_edges.get(_v(div_arc.end), []):
+                if _ce.edge_type == "LINE" and dist(_ce.end, mer_arc.start) <= tol:
+                    return True
+            for _ci, _ce in in_edges.get(_v(mer_arc.start), []):
+                if _ce.edge_type == "LINE" and dist(_ce.start, div_arc.end) <= tol:
+                    return True
+            return False
+
+        def _find_true_arc_line_arc(i, div_arc):
+            """div_arc.end → LINE 1개 → ARC 체인(진짜 호직호 파트너) 탐색.
+            반환: (mid_line_idx, partner_idx) 또는 (None, None)."""
+            for _mi, _me in out_edges.get(_v(div_arc.end), []):
+                if _me.edge_type != "LINE" or _mi in _complex_lr_flat:
+                    continue
+                for _pi, _pe in out_edges.get(_v(_me.end), []):
+                    if _pi == i or _pe.edge_type != "ARC":
+                        continue
+                    if _pi in _n_arc_idx_set or _pi in _already_paired or _pi in _complex_lr_flat:
+                        continue
+                    return _mi, _pi
+            return None, None
+
+        def _register_true_pair_or_skip(i, div_arc):
+            """오탐(비인접) div/mer 쌍 대신 진짜 호직호 파트너를 찾아 등록.
+            폭>=1601이면 plain(이격+대칭 J1), <1601이면 등록 없이 U 파이프라인에 위임."""
+            _mi2, _pi2 = _find_true_arc_line_arc(i, div_arc)
+            if _pi2 is not None:
+                _tX = dist(div_arc.start, unified_edges[_pi2].end)
+                if _tX >= 1601.0:
+                    _plain_no_arm_pairs.append((i, _pi2, _mi2))
+                    _already_paired.add(i)
+                    _already_paired.add(_pi2)
+
+        def _try_struct_complex_lr(div_idx, div_arc):
+            div_start_v = _v(div_arc.start)
+            div_end_v = _v(div_arc.end)
+            for div_line_i, div_line_e, div_line_v in _incident_edges(div_end_v, "LINE", {div_idx}):
+                used1 = {div_idx, div_line_i}
+                for inner1_i, inner1_e, inner1_v in _incident_edges(div_line_v, "ARC", used1):
+                    if inner1_i in _n_arc_idx_set:
+                        continue
+                    if dist(div_line_e.start, div_line_e.end) < 1601.0 and dist(div_arc.start, inner1_v) >= 1601.0:
+                        continue
+                    used2 = used1 | {inner1_i}
+                    for arm_i, arm_e, arm_v in _incident_edges(inner1_v, "LINE", used2):
+                        used3 = used2 | {arm_i}
+                        for inner2_i, inner2_e, inner2_v in _incident_edges(arm_v, "ARC", used3):
+                            if inner2_i in _n_arc_idx_set:
+                                continue
+                            used4 = used3 | {inner2_i}
+                            for merge_line_i, merge_line_e, merge_line_v in _incident_edges(inner2_v, "LINE", used4):
+                                used5 = used4 | {merge_line_i}
+                                for merge_i, merge_e, merge_v in _incident_edges(merge_line_v, "ARC", used5):
+                                    if merge_i in _n_arc_idx_set or merge_i in _already_paired:
+                                        continue
+                                    used6 = used5 | {merge_i}
+                                    main_i, main_e = _line_between_vkeys(merge_v, div_start_v, used6)
+                                    if main_e is None:
+                                        continue
+                                    main_len = dist(main_e.start, main_e.end)
+                                    arm_len = dist(arm_e.start, arm_e.end)
+                                    # 진짜 포켓형 복합분기는 main이 arm보다 확실히 길다(내부 호 스윕만큼,
+                                    # 통상 >=1800). 여유 없이 비교하면 좌우 대칭 링(양쪽 lane 길이가
+                                    # 부동소수점 차이)이 전체 링을 복합분기로 오인해 다리 직선을
+                                    # force 흡수하는 사고가 남 → 500mm 마진 요구.
+                                    if main_len <= arm_len + 500.0:
+                                        continue
+                                    arm_path = [div_line_i, inner1_i, arm_i, inner2_i, merge_line_i]
+                                    return merge_i, main_i, div_line_i, arm_path, main_len, arm_len
+            return None
+
+        _line_center_plain_seen = set()
+        for _li, _line in []:
+            if _line.edge_type != "LINE":
+                continue
+            _sv = _v(_line.start)
+            _ev = _v(_line.end)
+            _start_arcs = []
+            _end_arcs = []
+            for _ai, _arc in list(in_edges.get(_sv, [])) + list(out_edges.get(_sv, [])):
+                if _arc.edge_type == "ARC" and _ai not in _n_arc_idx_set:
+                    _start_arcs.append((_ai, _arc))
+            for _ai, _arc in list(in_edges.get(_ev, [])) + list(out_edges.get(_ev, [])):
+                if _arc.edge_type == "ARC" and _ai not in _n_arc_idx_set:
+                    _end_arcs.append((_ai, _arc))
+            if len(_start_arcs) != 1 or len(_end_arcs) != 1:
+                continue
+            _ai, _a = _start_arcs[0]
+            _bi, _b = _end_arcs[0]
+            if _ai == _bi or _ai in _already_paired or _bi in _already_paired:
+                continue
+            if _ai not in _pre_u_idx or _bi not in _pre_u_idx:
+                continue
+            _key = tuple(sorted((_ai, _bi)) + [_li])
+            if _key in _line_center_plain_seen:
+                continue
+
+            _forward = dist(_a.end, _line.start) <= tol and dist(_b.start, _line.end) <= tol
+            _reverse = dist(_a.start, _line.start) <= tol and dist(_b.end, _line.end) <= tol
+            if _forward:
+                _x = dist(_a.start, _b.end)
+            elif _reverse:
+                _x = dist(_a.end, _b.start)
+            else:
+                continue
+            if _x < 1601.0:
+                continue
+
+            _line_center_plain_pairs.append((_ai, _bi, _li))
+            _already_paired.add(_ai)
+            _already_paired.add(_bi)
+            _line_center_plain_seen.add(_key)
+
+        for i, arc in enumerate(unified_edges):
+            if arc.edge_type != "ARC" or i in _already_paired:
+                continue
+            if i in _n_arc_idx_set:
+                continue  # N 분기 아크를 div arc 후보에서 제외
+            _struct_hit = _try_struct_complex_lr(i, arc)
+            if _struct_hit is not None:
+                merge_arc_idx, main_line_idx, div_line_idx, arm_path, _main_len, _arm_len = _struct_hit
+                _struct_complex_lr_pairs.append((i, merge_arc_idx, main_line_idx, arm_path))
+                _complex_lr_flat.add(i)
+                _complex_lr_flat.add(merge_arc_idx)
+                _complex_lr_flat.update(arm_path)
                 _already_paired.add(i)
-                _already_paired.add(_pi2)
-
-    def _try_struct_complex_lr(div_idx, div_arc):
-        div_start_v = _v(div_arc.start)
-        div_end_v = _v(div_arc.end)
-        for div_line_i, div_line_e, div_line_v in _incident_edges(div_end_v, "LINE", {div_idx}):
-            used1 = {div_idx, div_line_i}
-            for inner1_i, inner1_e, inner1_v in _incident_edges(div_line_v, "ARC", used1):
-                if inner1_i in _n_arc_idx_set:
+                _already_paired.add(merge_arc_idx)
+                continue
+            js = _v(arc.start)
+            in_js  = in_edges.get(js, [])
+            out_js = out_edges.get(js, [])
+            if not (sum(1 for _, e in in_js  if e.edge_type == "LINE") == 1 and
+                    sum(1 for _, e in in_js  if e.edge_type == "ARC")  == 0 and
+                    sum(1 for _, e in out_js if e.edge_type == "LINE") == 1 and
+                    sum(1 for _, e in out_js if e.edge_type == "ARC")  == 1):
+                continue  # diverge junction 아님
+            out_lines = [(oi, oe) for oi, oe in out_js if oe.edge_type == "LINE"]
+            if not out_lines:
+                continue
+            top_line_idx, top_line_e = out_lines[0]
+            vb = _v(top_line_e.end)
+            in_vb  = in_edges.get(vb, [])
+            out_vb = out_edges.get(vb, [])
+            if not (sum(1 for _, e in in_vb  if e.edge_type == "LINE") == 1 and
+                    sum(1 for _, e in in_vb  if e.edge_type == "ARC")  == 1 and
+                    sum(1 for _, e in out_vb if e.edge_type == "LINE") == 1 and
+                    sum(1 for _, e in out_vb if e.edge_type == "ARC")  == 0):
+                continue  # top LINE 끝이 merge junction 아님
+            merge_arcs = [(mi, me) for mi, me in in_vb if me.edge_type == "ARC"]
+            if not merge_arcs:
+                continue
+            merge_arc_idx = merge_arcs[0][0]
+            if merge_arc_idx in _already_paired:
+                continue
+            if merge_arc_idx in _n_arc_idx_set:
+                continue  # N 분기 아크를 merge arc 후보에서 제외
+            # 방향 검사: div_arc와 mer_arc의 원 중심이 top_LINE 기준 같은 쪽이어야 복합분기
+            # 반대쪽이면 S-커브 호직호 → plain/small_no_arm 처리
+            _mer_arc_e = merge_arcs[0][1]
+            _tl_dx = top_line_e.end[0] - top_line_e.start[0]
+            _tl_dy = top_line_e.end[1] - top_line_e.start[1]
+            _div_side = _tl_dx * (arc._data.cy - top_line_e.start[1]) - _tl_dy * (arc._data.cx - top_line_e.start[0])
+            _mer_side = _tl_dx * (_mer_arc_e._data.cy - top_line_e.start[1]) - _tl_dy * (_mer_arc_e._data.cx - top_line_e.start[0])
+            if _div_side * _mer_side < -1e-6:
+                # 반대 방향 → 호직호
+                if not _arc_pair_adjacent(arc, _mer_arc_e):
+                    # 오탐: 본선을 사이에 둔 무관한 두 호 — 진짜 파트너로 대체 등록
+                    _register_true_pair_or_skip(i, arc)
                     continue
-                if dist(div_line_e.start, div_line_e.end) < 1601.0 and dist(div_arc.start, inner1_v) >= 1601.0:
+                _pX = dist(arc.start, _mer_arc_e.end)
+                if _pX < 1601.0:
+                    _small_x_no_arm_pairs.append((i, merge_arcs[0][0], top_line_idx))
+                else:
+                    _plain_no_arm_pairs.append((i, merge_arcs[0][0], top_line_idx))
+                _already_paired.add(i)
+                _already_paired.add(merge_arcs[0][0])
+                continue
+
+            # 내부 arm 연결 확인: div_arc.end → mer_arc.start (top LINE 제외)
+            div_arc_end_v = _v(arc.end)
+            mer_arc_start_v = _v(merge_arcs[0][1].start)
+            _pair_X_pre = dist(arc.start, merge_arcs[0][1].end)
+            if _pair_X_pre >= 1601.0 and dist(top_line_e.start, top_line_e.end) < 1601.0:
+                if not _arc_pair_adjacent(arc, merge_arcs[0][1]):
+                    # 오탐: 비인접 div/mer — 진짜 파트너로 대체 등록
+                    _register_true_pair_or_skip(i, arc)
                     continue
-                used2 = used1 | {inner1_i}
-                for arm_i, arm_e, arm_v in _incident_edges(inner1_v, "LINE", used2):
-                    used3 = used2 | {arm_i}
-                    for inner2_i, inner2_e, inner2_v in _incident_edges(arm_v, "ARC", used3):
-                        if inner2_i in _n_arc_idx_set:
-                            continue
-                        used4 = used3 | {inner2_i}
-                        for merge_line_i, merge_line_e, merge_line_v in _incident_edges(inner2_v, "LINE", used4):
-                            used5 = used4 | {merge_line_i}
-                            for merge_i, merge_e, merge_v in _incident_edges(merge_line_v, "ARC", used5):
-                                if merge_i in _n_arc_idx_set or merge_i in _already_paired:
-                                    continue
-                                used6 = used5 | {merge_i}
-                                main_i, main_e = _line_between_vkeys(merge_v, div_start_v, used6)
-                                if main_e is None:
-                                    continue
-                                main_len = dist(main_e.start, main_e.end)
-                                arm_len = dist(arm_e.start, arm_e.end)
-                                # 진짜 포켓형 복합분기는 main이 arm보다 확실히 길다(내부 호 스윕만큼,
-                                # 통상 >=1800). 여유 없이 비교하면 좌우 대칭 링(양쪽 lane 길이가
-                                # 부동소수점 차이)이 전체 링을 복합분기로 오인해 다리 직선을
-                                # force 흡수하는 사고가 남 → 500mm 마진 요구.
-                                if main_len <= arm_len + 500.0:
-                                    continue
-                                arm_path = [div_line_i, inner1_i, arm_i, inner2_i, merge_line_i]
-                                return merge_i, main_i, div_line_i, arm_path, main_len, arm_len
-        return None
+                _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                _already_paired.add(i)
+                _already_paired.add(merge_arc_idx)
+                continue
+            arm_path = _collect_arm_edge_path(div_arc_end_v, mer_arc_start_v, exclude_edge_idx=top_line_idx, exclude_set=_nu_branch_idx)
+            arm_indices = set(arm_path)
 
-    _line_center_plain_seen = set()
-    for _li, _line in []:
-        if _line.edge_type != "LINE":
-            continue
-        _sv = _v(_line.start)
-        _ev = _v(_line.end)
-        _start_arcs = []
-        _end_arcs = []
-        for _ai, _arc in list(in_edges.get(_sv, [])) + list(out_edges.get(_sv, [])):
-            if _arc.edge_type == "ARC" and _ai not in _n_arc_idx_set:
-                _start_arcs.append((_ai, _arc))
-        for _ai, _arc in list(in_edges.get(_ev, [])) + list(out_edges.get(_ev, [])):
-            if _arc.edge_type == "ARC" and _ai not in _n_arc_idx_set:
-                _end_arcs.append((_ai, _arc))
-        if len(_start_arcs) != 1 or len(_end_arcs) != 1:
-            continue
-        _ai, _a = _start_arcs[0]
-        _bi, _b = _end_arcs[0]
-        if _ai == _bi or _ai in _already_paired or _bi in _already_paired:
-            continue
-        if _ai not in _pre_u_idx or _bi not in _pre_u_idx:
-            continue
-        _key = tuple(sorted((_ai, _bi)) + [_li])
-        if _key in _line_center_plain_seen:
-            continue
+            _pair_X = dist(arc.start, merge_arcs[0][1].end)
+            _arm_u_idx = {ai for ai in arm_indices if _is_u_arc(ai) or ai in _pre_u_idx}
 
-        _forward = dist(_a.end, _line.start) <= tol and dist(_b.start, _line.end) <= tol
-        _reverse = dist(_a.start, _line.start) <= tol and dist(_b.end, _line.end) <= tol
-        if _forward:
-            _x = dist(_a.start, _b.end)
-        elif _reverse:
-            _x = dist(_a.end, _b.start)
-        else:
-            continue
-        if _x < 1601.0:
-            continue
+            # arm 내부 arc 쌍(mer_arc2, div_arc2) 추출
+            _arm_arc_list = [(ai, unified_edges[ai]) for ai in arm_path
+                             if unified_edges[ai].edge_type == "ARC"]
 
-        _line_center_plain_pairs.append((_ai, _bi, _li))
-        _already_paired.add(_ai)
-        _already_paired.add(_bi)
-        _line_center_plain_seen.add(_key)
+            # directed BFS가 arc 2개짜리 arm을 못 찾으면 5-hop 직접 탐색
+            if len(_arm_arc_list) != 2:
+                arm_path = []
+                arm_indices = set()
+                _arm_u_idx = set()
+                _arm_arc_list = []
+                _excl = {top_line_idx, i, merge_arc_idx}
+                for _l1i, _l1e in (list(out_edges.get(div_arc_end_v, [])) + list(in_edges.get(div_arc_end_v, []))):
+                    if _l1e.edge_type != "LINE" or _l1i in _excl: continue
+                    _v1a = _v(_l1e.end) if _v(_l1e.start) == div_arc_end_v else _v(_l1e.start)
+                    for _a1i, _a1e in (list(out_edges.get(_v1a, [])) + list(in_edges.get(_v1a, []))):
+                        if _a1e.edge_type != "ARC" or _a1i in _excl: continue
+                        _v2 = _v(_a1e.end) if _v(_a1e.start) == _v1a else _v(_a1e.start)
+                        for _l2i, _l2e in (list(out_edges.get(_v2, [])) + list(in_edges.get(_v2, []))):
+                            if _l2e.edge_type != "LINE" or _l2i in _excl or _l2i == _l1i: continue
+                            _v3 = _v(_l2e.end) if _v(_l2e.start) == _v2 else _v(_l2e.start)
+                            for _a2i, _a2e in (list(out_edges.get(_v3, [])) + list(in_edges.get(_v3, []))):
+                                if _a2e.edge_type != "ARC" or _a2i in _excl or _a2i == _a1i: continue
+                                _v4 = _v(_a2e.end) if _v(_a2e.start) == _v3 else _v(_a2e.start)
+                                for _l3i, _l3e in (list(out_edges.get(_v4, [])) + list(in_edges.get(_v4, []))):
+                                    if _l3e.edge_type != "LINE" or _l3i in _excl or _l3i in {_l1i, _l2i}: continue
+                                    _v5 = _v(_l3e.end) if _v(_l3e.start) == _v4 else _v(_l3e.start)
+                                    if _v5 == mer_arc_start_v:
+                                        arm_path = [_l1i, _a1i, _l2i, _a2i, _l3i]
+                                        break
+                                if arm_path: break
+                            if arm_path: break
+                        if arm_path: break
+                    if arm_path: break
+                if arm_path:
+                    arm_indices = set(arm_path)
+                    _arm_u_idx = {ai for ai in arm_indices if _is_u_arc(ai) or ai in _pre_u_idx}
+                    _arm_arc_list = [(ai, unified_edges[ai]) for ai in arm_path
+                                     if unified_edges[ai].edge_type == "ARC"]
 
-    for i, arc in enumerate(unified_edges):
-        if arc.edge_type != "ARC" or i in _already_paired:
-            continue
-        if i in _n_arc_idx_set:
-            continue  # N 분기 아크를 div arc 후보에서 제외
-        _struct_hit = _try_struct_complex_lr(i, arc)
-        if _struct_hit is not None:
+            # 5-hop 실패 시 rigid 4-hop [LINE, ARC, ARC, LINE] 탐색
+            # (단일 U 호가 180° 분할로 두 호가 된 복합분기 arm. div_end→LINE→ARC→ARC→LINE→mer_start)
+            if len(_arm_arc_list) != 2:
+                _excl4 = {top_line_idx, i, merge_arc_idx}
+                _found4 = None
+                for _l1i, _l1e in (list(out_edges.get(div_arc_end_v, [])) + list(in_edges.get(div_arc_end_v, []))):
+                    if _l1e.edge_type != "LINE" or _l1i in _excl4: continue
+                    _v1a = _v(_l1e.end) if _v(_l1e.start) == div_arc_end_v else _v(_l1e.start)
+                    for _a1i, _a1e in (list(out_edges.get(_v1a, [])) + list(in_edges.get(_v1a, []))):
+                        if _a1e.edge_type != "ARC" or _a1i in _excl4 or _a1i in _n_arc_idx_set: continue
+                        _v2 = _v(_a1e.end) if _v(_a1e.start) == _v1a else _v(_a1e.start)
+                        for _a2i, _a2e in (list(out_edges.get(_v2, [])) + list(in_edges.get(_v2, []))):
+                            if _a2e.edge_type != "ARC" or _a2i in _excl4 or _a2i == _a1i or _a2i in _n_arc_idx_set: continue
+                            _v3 = _v(_a2e.end) if _v(_a2e.start) == _v2 else _v(_a2e.start)
+                            for _l2i, _l2e in (list(out_edges.get(_v3, [])) + list(in_edges.get(_v3, []))):
+                                if _l2e.edge_type != "LINE" or _l2i in _excl4 or _l2i == _l1i: continue
+                                _v4 = _v(_l2e.end) if _v(_l2e.start) == _v3 else _v(_l2e.start)
+                                if _v4 == mer_arc_start_v:
+                                    _found4 = [_l1i, _a1i, _a2i, _l2i]
+                                    break
+                            if _found4: break
+                        if _found4: break
+                    if _found4: break
+                if _found4:
+                    # 단일 U arm(분할된 두 호): X = dist(div_arc.end, mer_arc.start)
+                    _Xu = dist(arc.end, merge_arcs[0][1].start)
+                    if _Xu < _pair_X:
+                        # _found4 = [_l1i, _a1i, _a2i, _l2i] — 두 ARC가 분할된 U
+                        _arm_u_arcs = tuple(ai for ai in _found4
+                                            if unified_edges[ai].edge_type == "ARC")
+                        # div/mer는 복합분기 타입, arm U는 U분기로 보존(흡수·제외 안함)
+                        _complex_lr_flat.add(i)
+                        _complex_lr_flat.add(merge_arc_idx)
+                        _u_arm_pairs.append((i, merge_arc_idx, top_line_idx, _found4, _arm_u_arcs))
+                        _already_paired.add(i)
+                        _already_paired.add(merge_arc_idx)
+                        continue
+
+            # 내부 호가 first-pass U 탐지(ori 기하 기반)에 속하면 진짜 U분기
+            _inner_arcs = [ai for ai in arm_path if unified_edges[ai].edge_type == "ARC"]
+            _inner_is_u = any((ai in _pre_u_idx) or _is_u_arc(ai) for ai in _inner_arcs)
+
+            if len(_arm_arc_list) < 2:
+                # arm 없음: div/mer가 인접해야 진짜 호(직)호 — 아니면 오탐이므로 대체 등록
+                if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
+                    _register_true_pair_or_skip(i, arc)
+                    continue
+                # arm 없음: div/mer가 first-pass U면 U, 아니면 호직호
+                if _pair_X < 1601.0 and ((i in _pre_u_idx) or _is_u_arc(i)):
+                    _u_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                elif _pair_X < 1601.0:
+                    _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                else:
+                    _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                _already_paired.add(i)
+                _already_paired.add(merge_arc_idx)
+                continue
+
+            # X = dist(div_arc2.start, mer_arc2.end) — arm_path 순서: mer_arc2 먼저, div_arc2 다음
+            _mer_arc2_e = _arm_arc_list[0][1]
+            _div_arc2_e = _arm_arc_list[1][1]
+            _X = dist(_div_arc2_e.start, _mer_arc2_e.end)
+
+            # 복합분기 유효성: pair_X > X 이어야 함 (X >= pair_X는 복합분기 아님 → U/호직호 처리)
+            if _X >= _pair_X:
+                # div/mer가 인접해야 진짜 호(직)호 — 허위 arm(5-hop 오탐)으로 잡힌 무관한 쌍 차단
+                if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
+                    _register_true_pair_or_skip(i, arc)
+                    continue
+                if _pair_X < 1601.0 and _inner_is_u:
+                    # pair_X<1601 + 내부 호가 진짜 U → 순수 U분기(단일 U링크 유지)
+                    _u_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                elif _pair_X < 1601.0:
+                    # U 아님 → 호직호로 보존(R-S-R 분리 렌더)
+                    _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                else:
+                    _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                _already_paired.add(i)
+                _already_paired.add(merge_arc_idx)
+                continue
+
+            if _X < 1601.0:
+                if _pair_X < 1601.0 and _inner_is_u:
+                    # pair_X<1601 + 진짜 U → U 파이프라인에 위임
+                    _already_paired.add(i)
+                    _already_paired.add(merge_arc_idx)
+                    continue
+                if _pair_X < 1601.0:
+                    # U 아님 → 호직호로 보존 (div/mer 인접일 때만 — 오탐 쌍 차단)
+                    if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
+                        _register_true_pair_or_skip(i, arc)
+                        continue
+                    _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
+                    _already_paired.add(i)
+                    _already_paired.add(merge_arc_idx)
+                    continue
+                _small_x_complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
+                _complex_lr_flat.add(i)
+                _complex_lr_flat.add(merge_arc_idx)
+                if _inner_is_u:
+                    # 바깥 pair_X>=1601(복합)이지만 arm이 진짜 U(호-직-호, X<1601)이면
+                    # arm U를 흡수하지 않고 단일 U로 보존한다. inner 호·선을 제외셋
+                    # (complex_lr_flat·intra_arm_u_idx)에 넣지 않아, clearance 이후
+                    # by_x 재탐지가 arc-line-arc 를 단일 U 링크로 병합하게 둔다.
+                    # 바깥 div/mer만 복합으로 처리. (arm geometry는 위 흡수 단계에서 불변)
+                    pass
+                else:
+                    _complex_lr_flat.update(arm_indices - _arm_u_idx)
+                    _intra_arm_u_idx.update(_arm_u_idx)
+                _already_paired.add(i)
+                _already_paired.add(merge_arc_idx)
+                continue
+
+            # X >= 1601 → 진짜 복합분기
+            _complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
+            _complex_lr_flat.add(i)
+            _complex_lr_flat.add(merge_arc_idx)
+            _complex_lr_flat.update(arm_indices - _arm_u_idx)
+            _intra_arm_u_idx.update(_arm_u_idx)
+            _already_paired.add(i)
+            _already_paired.add(merge_arc_idx)
+
+        for i, arc in enumerate(unified_edges):
+            if arc.edge_type != "ARC" or i in _already_paired:
+                continue
+            if i in _n_arc_idx_set:
+                continue
+            _struct_hit = _try_struct_complex_lr(i, arc)
+            if _struct_hit is None:
+                continue
             merge_arc_idx, main_line_idx, div_line_idx, arm_path, _main_len, _arm_len = _struct_hit
             _struct_complex_lr_pairs.append((i, merge_arc_idx, main_line_idx, arm_path))
             _complex_lr_flat.add(i)
@@ -695,422 +950,192 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             _complex_lr_flat.update(arm_path)
             _already_paired.add(i)
             _already_paired.add(merge_arc_idx)
-            continue
-        js = _v(arc.start)
-        in_js  = in_edges.get(js, [])
-        out_js = out_edges.get(js, [])
-        if not (sum(1 for _, e in in_js  if e.edge_type == "LINE") == 1 and
-                sum(1 for _, e in in_js  if e.edge_type == "ARC")  == 0 and
-                sum(1 for _, e in out_js if e.edge_type == "LINE") == 1 and
-                sum(1 for _, e in out_js if e.edge_type == "ARC")  == 1):
-            continue  # diverge junction 아님
-        out_lines = [(oi, oe) for oi, oe in out_js if oe.edge_type == "LINE"]
-        if not out_lines:
-            continue
-        top_line_idx, top_line_e = out_lines[0]
-        vb = _v(top_line_e.end)
-        in_vb  = in_edges.get(vb, [])
-        out_vb = out_edges.get(vb, [])
-        if not (sum(1 for _, e in in_vb  if e.edge_type == "LINE") == 1 and
-                sum(1 for _, e in in_vb  if e.edge_type == "ARC")  == 1 and
-                sum(1 for _, e in out_vb if e.edge_type == "LINE") == 1 and
-                sum(1 for _, e in out_vb if e.edge_type == "ARC")  == 0):
-            continue  # top LINE 끝이 merge junction 아님
-        merge_arcs = [(mi, me) for mi, me in in_vb if me.edge_type == "ARC"]
-        if not merge_arcs:
-            continue
-        merge_arc_idx = merge_arcs[0][0]
-        if merge_arc_idx in _already_paired:
-            continue
-        if merge_arc_idx in _n_arc_idx_set:
-            continue  # N 분기 아크를 merge arc 후보에서 제외
-        # 방향 검사: div_arc와 mer_arc의 원 중심이 top_LINE 기준 같은 쪽이어야 복합분기
-        # 반대쪽이면 S-커브 호직호 → plain/small_no_arm 처리
-        _mer_arc_e = merge_arcs[0][1]
-        _tl_dx = top_line_e.end[0] - top_line_e.start[0]
-        _tl_dy = top_line_e.end[1] - top_line_e.start[1]
-        _div_side = _tl_dx * (arc._data.cy - top_line_e.start[1]) - _tl_dy * (arc._data.cx - top_line_e.start[0])
-        _mer_side = _tl_dx * (_mer_arc_e._data.cy - top_line_e.start[1]) - _tl_dy * (_mer_arc_e._data.cx - top_line_e.start[0])
-        if _div_side * _mer_side < -1e-6:
-            # 반대 방향 → 호직호
-            if not _arc_pair_adjacent(arc, _mer_arc_e):
-                # 오탐: 본선을 사이에 둔 무관한 두 호 — 진짜 파트너로 대체 등록
-                _register_true_pair_or_skip(i, arc)
+
+        _kept_complex_lr_pairs = []
+        for _d, _m, _t, _a in _complex_lr_pairs:
+            _tl = unified_edges[_t]
+            if (
+                _tl.edge_type == "LINE"
+                and dist(unified_edges[_d].start, unified_edges[_m].end) >= 1601.0
+                and dist(_tl.start, _tl.end) < 1601.0
+            ):
+                _plain_no_arm_pairs.append((_d, _m, _t))
+                _complex_lr_flat.discard(_d)
+                _complex_lr_flat.discard(_m)
+                for _ai in _a:
+                    _complex_lr_flat.discard(_ai)
                 continue
-            _pX = dist(arc.start, _mer_arc_e.end)
-            if _pX < 1601.0:
-                _small_x_no_arm_pairs.append((i, merge_arcs[0][0], top_line_idx))
-            else:
-                _plain_no_arm_pairs.append((i, merge_arcs[0][0], top_line_idx))
-            _already_paired.add(i)
-            _already_paired.add(merge_arcs[0][0])
-            continue
+            _kept_complex_lr_pairs.append((_d, _m, _t, _a))
+        _complex_lr_pairs = _kept_complex_lr_pairs
 
-        # 내부 arm 연결 확인: div_arc.end → mer_arc.start (top LINE 제외)
-        div_arc_end_v = _v(arc.end)
-        mer_arc_start_v = _v(merge_arcs[0][1].start)
-        _pair_X_pre = dist(arc.start, merge_arcs[0][1].end)
-        if _pair_X_pre >= 1601.0 and dist(top_line_e.start, top_line_e.end) < 1601.0:
-            if not _arc_pair_adjacent(arc, merge_arcs[0][1]):
-                # 오탐: 비인접 div/mer — 진짜 파트너로 대체 등록
-                _register_true_pair_or_skip(i, arc)
+        _kept_struct_complex_lr_pairs = []
+        for _d, _m, _main, _a in _struct_complex_lr_pairs:
+            _dl = unified_edges[_a[0]] if _a else None
+            if (
+                _dl is not None and _dl.edge_type == "LINE"
+                and dist(unified_edges[_d].start, unified_edges[_m].end) >= 1601.0
+                and dist(_dl.start, _dl.end) < 1601.0
+            ):
+                _plain_no_arm_pairs.append((_d, _m, _a[0]))
+                _complex_lr_flat.discard(_d)
+                _complex_lr_flat.discard(_m)
+                for _ai in _a:
+                    _complex_lr_flat.discard(_ai)
                 continue
-            _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            _already_paired.add(i)
-            _already_paired.add(merge_arc_idx)
-            continue
-        arm_path = _collect_arm_edge_path(div_arc_end_v, mer_arc_start_v, exclude_edge_idx=top_line_idx, exclude_set=_nu_branch_idx)
-        arm_indices = set(arm_path)
+            _kept_struct_complex_lr_pairs.append((_d, _m, _main, _a))
+        _struct_complex_lr_pairs = _kept_struct_complex_lr_pairs
 
-        _pair_X = dist(arc.start, merge_arcs[0][1].end)
-        _arm_u_idx = {ai for ai in arm_indices if _is_u_arc(ai) or ai in _pre_u_idx}
+        _plain_no_arm_edge_idx = set()
+        for _d, _m, _t in _plain_no_arm_pairs:
+            _plain_no_arm_edge_idx.update((_d, _m, _t))
+        for _d, _m, _t in _line_center_plain_pairs:
+            _plain_no_arm_edge_idx.update((_d, _m, _t))
+        if _plain_no_arm_edge_idx:
+            def _drop_complex_if_plain_conflict(_pairs):
+                _kept = []
+                for _d, _m, _t, _a in _pairs:
+                    _indices = {_d, _m, _t} | set(_a)
+                    if _indices & _plain_no_arm_edge_idx:
+                        _complex_lr_flat.difference_update(_indices)
+                        continue
+                    _kept.append((_d, _m, _t, _a))
+                return _kept
 
-        # arm 내부 arc 쌍(mer_arc2, div_arc2) 추출
-        _arm_arc_list = [(ai, unified_edges[ai]) for ai in arm_path
-                         if unified_edges[ai].edge_type == "ARC"]
+            _complex_lr_pairs = _drop_complex_if_plain_conflict(_complex_lr_pairs)
+            _small_x_complex_lr_pairs = _drop_complex_if_plain_conflict(_small_x_complex_lr_pairs)
+            _struct_complex_lr_pairs = _drop_complex_if_plain_conflict(_struct_complex_lr_pairs)
 
-        # directed BFS가 arc 2개짜리 arm을 못 찾으면 5-hop 직접 탐색
-        if len(_arm_arc_list) != 2:
-            arm_path = []
-            arm_indices = set()
-            _arm_u_idx = set()
-            _arm_arc_list = []
-            _excl = {top_line_idx, i, merge_arc_idx}
-            for _l1i, _l1e in (list(out_edges.get(div_arc_end_v, [])) + list(in_edges.get(div_arc_end_v, []))):
-                if _l1e.edge_type != "LINE" or _l1i in _excl: continue
-                _v1a = _v(_l1e.end) if _v(_l1e.start) == div_arc_end_v else _v(_l1e.start)
-                for _a1i, _a1e in (list(out_edges.get(_v1a, [])) + list(in_edges.get(_v1a, []))):
-                    if _a1e.edge_type != "ARC" or _a1i in _excl: continue
-                    _v2 = _v(_a1e.end) if _v(_a1e.start) == _v1a else _v(_a1e.start)
-                    for _l2i, _l2e in (list(out_edges.get(_v2, [])) + list(in_edges.get(_v2, []))):
-                        if _l2e.edge_type != "LINE" or _l2i in _excl or _l2i == _l1i: continue
-                        _v3 = _v(_l2e.end) if _v(_l2e.start) == _v2 else _v(_l2e.start)
-                        for _a2i, _a2e in (list(out_edges.get(_v3, [])) + list(in_edges.get(_v3, []))):
-                            if _a2e.edge_type != "ARC" or _a2i in _excl or _a2i == _a1i: continue
-                            _v4 = _v(_a2e.end) if _v(_a2e.start) == _v3 else _v(_a2e.start)
-                            for _l3i, _l3e in (list(out_edges.get(_v4, [])) + list(in_edges.get(_v4, []))):
-                                if _l3e.edge_type != "LINE" or _l3i in _excl or _l3i in {_l1i, _l2i}: continue
-                                _v5 = _v(_l3e.end) if _v(_l3e.start) == _v4 else _v(_l3e.start)
-                                if _v5 == mer_arc_start_v:
-                                    arm_path = [_l1i, _a1i, _l2i, _a2i, _l3i]
-                                    break
-                            if arm_path: break
-                        if arm_path: break
-                    if arm_path: break
-                if arm_path: break
-            if arm_path:
-                arm_indices = set(arm_path)
-                _arm_u_idx = {ai for ai in arm_indices if _is_u_arc(ai) or ai in _pre_u_idx}
-                _arm_arc_list = [(ai, unified_edges[ai]) for ai in arm_path
-                                 if unified_edges[ai].edge_type == "ARC"]
-
-        # 5-hop 실패 시 rigid 4-hop [LINE, ARC, ARC, LINE] 탐색
-        # (단일 U 호가 180° 분할로 두 호가 된 복합분기 arm. div_end→LINE→ARC→ARC→LINE→mer_start)
-        if len(_arm_arc_list) != 2:
-            _excl4 = {top_line_idx, i, merge_arc_idx}
-            _found4 = None
-            for _l1i, _l1e in (list(out_edges.get(div_arc_end_v, [])) + list(in_edges.get(div_arc_end_v, []))):
-                if _l1e.edge_type != "LINE" or _l1i in _excl4: continue
-                _v1a = _v(_l1e.end) if _v(_l1e.start) == div_arc_end_v else _v(_l1e.start)
-                for _a1i, _a1e in (list(out_edges.get(_v1a, [])) + list(in_edges.get(_v1a, []))):
-                    if _a1e.edge_type != "ARC" or _a1i in _excl4 or _a1i in _n_arc_idx_set: continue
-                    _v2 = _v(_a1e.end) if _v(_a1e.start) == _v1a else _v(_a1e.start)
-                    for _a2i, _a2e in (list(out_edges.get(_v2, [])) + list(in_edges.get(_v2, []))):
-                        if _a2e.edge_type != "ARC" or _a2i in _excl4 or _a2i == _a1i or _a2i in _n_arc_idx_set: continue
-                        _v3 = _v(_a2e.end) if _v(_a2e.start) == _v2 else _v(_a2e.start)
-                        for _l2i, _l2e in (list(out_edges.get(_v3, [])) + list(in_edges.get(_v3, []))):
-                            if _l2e.edge_type != "LINE" or _l2i in _excl4 or _l2i == _l1i: continue
-                            _v4 = _v(_l2e.end) if _v(_l2e.start) == _v3 else _v(_l2e.start)
-                            if _v4 == mer_arc_start_v:
-                                _found4 = [_l1i, _a1i, _a2i, _l2i]
-                                break
-                        if _found4: break
-                    if _found4: break
-                if _found4: break
-            if _found4:
-                # 단일 U arm(분할된 두 호): X = dist(div_arc.end, mer_arc.start)
-                _Xu = dist(arc.end, merge_arcs[0][1].start)
-                if _Xu < _pair_X:
-                    # _found4 = [_l1i, _a1i, _a2i, _l2i] — 두 ARC가 분할된 U
-                    _arm_u_arcs = tuple(ai for ai in _found4
-                                        if unified_edges[ai].edge_type == "ARC")
-                    # div/mer는 복합분기 타입, arm U는 U분기로 보존(흡수·제외 안함)
-                    _complex_lr_flat.add(i)
-                    _complex_lr_flat.add(merge_arc_idx)
-                    _u_arm_pairs.append((i, merge_arc_idx, top_line_idx, _found4, _arm_u_arcs))
-                    _already_paired.add(i)
-                    _already_paired.add(merge_arc_idx)
-                    continue
-
-        # 내부 호가 first-pass U 탐지(ori 기하 기반)에 속하면 진짜 U분기
-        _inner_arcs = [ai for ai in arm_path if unified_edges[ai].edge_type == "ARC"]
-        _inner_is_u = any((ai in _pre_u_idx) or _is_u_arc(ai) for ai in _inner_arcs)
-
-        if len(_arm_arc_list) < 2:
-            # arm 없음: div/mer가 인접해야 진짜 호(직)호 — 아니면 오탐이므로 대체 등록
-            if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
-                _register_true_pair_or_skip(i, arc)
-                continue
-            # arm 없음: div/mer가 first-pass U면 U, 아니면 호직호
-            if _pair_X < 1601.0 and ((i in _pre_u_idx) or _is_u_arc(i)):
-                _u_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            elif _pair_X < 1601.0:
-                _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            else:
-                _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            _already_paired.add(i)
-            _already_paired.add(merge_arc_idx)
-            continue
-
-        # X = dist(div_arc2.start, mer_arc2.end) — arm_path 순서: mer_arc2 먼저, div_arc2 다음
-        _mer_arc2_e = _arm_arc_list[0][1]
-        _div_arc2_e = _arm_arc_list[1][1]
-        _X = dist(_div_arc2_e.start, _mer_arc2_e.end)
-
-        # 복합분기 유효성: pair_X > X 이어야 함 (X >= pair_X는 복합분기 아님 → U/호직호 처리)
-        if _X >= _pair_X:
-            # div/mer가 인접해야 진짜 호(직)호 — 허위 arm(5-hop 오탐)으로 잡힌 무관한 쌍 차단
-            if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
-                _register_true_pair_or_skip(i, arc)
-                continue
-            if _pair_X < 1601.0 and _inner_is_u:
-                # pair_X<1601 + 내부 호가 진짜 U → 순수 U분기(단일 U링크 유지)
-                _u_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            elif _pair_X < 1601.0:
-                # U 아님 → 호직호로 보존(R-S-R 분리 렌더)
-                _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            else:
-                _plain_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-            _already_paired.add(i)
-            _already_paired.add(merge_arc_idx)
-            continue
-
-        if _X < 1601.0:
-            if _pair_X < 1601.0 and _inner_is_u:
-                # pair_X<1601 + 진짜 U → U 파이프라인에 위임
-                _already_paired.add(i)
-                _already_paired.add(merge_arc_idx)
-                continue
-            if _pair_X < 1601.0:
-                # U 아님 → 호직호로 보존 (div/mer 인접일 때만 — 오탐 쌍 차단)
-                if not _arc_pair_adjacent(arc, unified_edges[merge_arc_idx]):
-                    _register_true_pair_or_skip(i, arc)
-                    continue
-                _small_x_no_arm_pairs.append((i, merge_arc_idx, top_line_idx))
-                _already_paired.add(i)
-                _already_paired.add(merge_arc_idx)
-                continue
-            _small_x_complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
-            _complex_lr_flat.add(i)
-            _complex_lr_flat.add(merge_arc_idx)
-            if _inner_is_u:
-                # 바깥 pair_X>=1601(복합)이지만 arm이 진짜 U(호-직-호, X<1601)이면
-                # arm U를 흡수하지 않고 단일 U로 보존한다. inner 호·선을 제외셋
-                # (complex_lr_flat·intra_arm_u_idx)에 넣지 않아, clearance 이후
-                # by_x 재탐지가 arc-line-arc 를 단일 U 링크로 병합하게 둔다.
-                # 바깥 div/mer만 복합으로 처리. (arm geometry는 위 흡수 단계에서 불변)
-                pass
-            else:
-                _complex_lr_flat.update(arm_indices - _arm_u_idx)
-                _intra_arm_u_idx.update(_arm_u_idx)
-            _already_paired.add(i)
-            _already_paired.add(merge_arc_idx)
-            continue
-
-        # X >= 1601 → 진짜 복합분기
-        _complex_lr_pairs.append((i, merge_arc_idx, top_line_idx, arm_path))
-        _complex_lr_flat.add(i)
-        _complex_lr_flat.add(merge_arc_idx)
-        _complex_lr_flat.update(arm_indices - _arm_u_idx)
-        _intra_arm_u_idx.update(_arm_u_idx)
-        _already_paired.add(i)
-        _already_paired.add(merge_arc_idx)
-
-    for i, arc in enumerate(unified_edges):
-        if arc.edge_type != "ARC" or i in _already_paired:
-            continue
-        if i in _n_arc_idx_set:
-            continue
-        _struct_hit = _try_struct_complex_lr(i, arc)
-        if _struct_hit is None:
-            continue
-        merge_arc_idx, main_line_idx, div_line_idx, arm_path, _main_len, _arm_len = _struct_hit
-        _struct_complex_lr_pairs.append((i, merge_arc_idx, main_line_idx, arm_path))
-        _complex_lr_flat.add(i)
-        _complex_lr_flat.add(merge_arc_idx)
-        _complex_lr_flat.update(arm_path)
-        _already_paired.add(i)
-        _already_paired.add(merge_arc_idx)
-
-    _kept_complex_lr_pairs = []
-    for _d, _m, _t, _a in _complex_lr_pairs:
-        _tl = unified_edges[_t]
-        if (
-            _tl.edge_type == "LINE"
-            and dist(unified_edges[_d].start, unified_edges[_m].end) >= 1601.0
-            and dist(_tl.start, _tl.end) < 1601.0
-        ):
-            _plain_no_arm_pairs.append((_d, _m, _t))
-            _complex_lr_flat.discard(_d)
-            _complex_lr_flat.discard(_m)
-            for _ai in _a:
-                _complex_lr_flat.discard(_ai)
-            continue
-        _kept_complex_lr_pairs.append((_d, _m, _t, _a))
-    _complex_lr_pairs = _kept_complex_lr_pairs
-
-    _kept_struct_complex_lr_pairs = []
-    for _d, _m, _main, _a in _struct_complex_lr_pairs:
-        _dl = unified_edges[_a[0]] if _a else None
-        if (
-            _dl is not None and _dl.edge_type == "LINE"
-            and dist(unified_edges[_d].start, unified_edges[_m].end) >= 1601.0
-            and dist(_dl.start, _dl.end) < 1601.0
-        ):
-            _plain_no_arm_pairs.append((_d, _m, _a[0]))
-            _complex_lr_flat.discard(_d)
-            _complex_lr_flat.discard(_m)
-            for _ai in _a:
-                _complex_lr_flat.discard(_ai)
-            continue
-        _kept_struct_complex_lr_pairs.append((_d, _m, _main, _a))
-    _struct_complex_lr_pairs = _kept_struct_complex_lr_pairs
-
-    _plain_no_arm_edge_idx = set()
-    for _d, _m, _t in _plain_no_arm_pairs:
-        _plain_no_arm_edge_idx.update((_d, _m, _t))
-    for _d, _m, _t in _line_center_plain_pairs:
-        _plain_no_arm_edge_idx.update((_d, _m, _t))
-    if _plain_no_arm_edge_idx:
-        def _drop_complex_if_plain_conflict(_pairs):
-            _kept = []
-            for _d, _m, _t, _a in _pairs:
-                _indices = {_d, _m, _t} | set(_a)
+            _kept_u_arm_pairs = []
+            for _ua in _u_arm_pairs:
+                _indices = {_ua[0], _ua[1], _ua[2]} | set(_ua[3]) | set(_ua[4])
                 if _indices & _plain_no_arm_edge_idx:
                     _complex_lr_flat.difference_update(_indices)
                     continue
-                _kept.append((_d, _m, _t, _a))
-            return _kept
+                _kept_u_arm_pairs.append(_ua)
+            _u_arm_pairs = _kept_u_arm_pairs
+            _complex_lr_flat.difference_update(_plain_no_arm_edge_idx)
 
-        _complex_lr_pairs = _drop_complex_if_plain_conflict(_complex_lr_pairs)
-        _small_x_complex_lr_pairs = _drop_complex_if_plain_conflict(_small_x_complex_lr_pairs)
-        _struct_complex_lr_pairs = _drop_complex_if_plain_conflict(_struct_complex_lr_pairs)
-
-        _kept_u_arm_pairs = []
-        for _ua in _u_arm_pairs:
-            _indices = {_ua[0], _ua[1], _ua[2]} | set(_ua[3]) | set(_ua[4])
-            if _indices & _plain_no_arm_edge_idx:
-                _complex_lr_flat.difference_update(_indices)
+        # --- [2단계] U/N 분기 분류 (X <= 1600 → U, X > 1600 → 복합분기) ---
+        U_X_THRESHOLD = 1601.0
+        _u_pairs = []
+        _complex_pairs = []
+        for p in _u_pairs_all:
+            if any(idx in _complex_lr_flat for idx in p):
                 continue
-            _kept_u_arm_pairs.append(_ua)
-        _u_arm_pairs = _kept_u_arm_pairs
-        _complex_lr_flat.difference_update(_plain_no_arm_edge_idx)
-
-    # --- [2단계] U/N 분기 분류 (X <= 1600 → U, X > 1600 → 복합분기) ---
-    U_X_THRESHOLD = 1601.0
-    _u_pairs = []
-    _complex_pairs = []
-    for p in _u_pairs_all:
-        if any(idx in _complex_lr_flat for idx in p):
-            continue
-        fa = unified_edges[p[0]]
-        la = unified_edges[p[-1]]
-        if fa.edge_type == "ARC" and la.edge_type == "ARC":
-            X = dist(fa.start, la.end)
-            if X < U_X_THRESHOLD:
-                _u_pairs.append(p)
-            else:
-                _complex_pairs.append(p)
-        else:
-            _u_pairs.append(p)
-
-    # 단순 분기/전환선 (파란색, 대형 및 소형 모두)도 U 분기로 간주하여 대칭 clearance 및 병합 처리
-    for div_idx, mer_idx, top_line_idx in _plain_no_arm_pairs:
-        _u_pairs.append((div_idx, mer_idx))
-    for div_idx, mer_idx, top_line_idx in _small_x_no_arm_pairs:
-        if div_idx in _complex_lr_flat or mer_idx in _complex_lr_flat:
-            continue
-        _u_pairs.append((div_idx, mer_idx))
-    # 순수 U분기(same-dir no-arm): U쌍 등록 → second-pass가 단일 U링크로 그룹핑
-    for div_idx, mer_idx, top_line_idx in _u_no_arm_pairs:
-        _u_pairs.append((div_idx, mer_idx))
-    # U-arm 복합분기: arm의 두 분할 U 호를 U 쌍으로 등록 → 단일 U 링크로 보존(350mm J1)
-    for _ua in _u_arm_pairs:
-        _u_pairs.append(_ua[4])
-
-
-
-    # 그래프에서 직접 X < 1600 U쌍 추가 탐지 (전달받은 u_arc_indices 누락분 보완)
-
-    _u_pairs_len_before_scan = len(_u_pairs)
-    _u_covered = set(idx for pair in _u_pairs for idx in pair)
-    _u_covered |= set(idx for pair in _complex_pairs for idx in pair)
-    _u_covered |= _complex_lr_flat
-    _u_covered |= set(idx for pair in _n_pairs for idx in pair)
-    for i, arc in enumerate(unified_edges):
-        if arc.edge_type != "ARC" or i in _u_covered:
-            continue
-            
-        d = arc._data
-        sa = float(getattr(d, "dxf_start_deg", getattr(d, "start_deg", 0)))
-        ea = float(getattr(d, "dxf_end_deg", getattr(d, "end_deg", 0)))
-        ccw = (ea - sa) % 360.0
-        sweep = min(ccw, 360.0 - ccw)
-        if abs(sweep - 180.0) <= 5.0:
-            _u_pairs.append((i,))
-            _u_covered.add(i)
-            continue
-        v_end = _v(arc.end)
-        for j, next_e in out_edges.get(v_end, []):
-            if j in _u_covered:
-                continue
-            if next_e.edge_type == "ARC":
-                X = dist(arc.start, next_e.end)
+            fa = unified_edges[p[0]]
+            la = unified_edges[p[-1]]
+            if fa.edge_type == "ARC" and la.edge_type == "ARC":
+                X = dist(fa.start, la.end)
                 if X < U_X_THRESHOLD:
-                    _u_pairs.append((i, j))
-                    _u_covered.add(i)
-                    _u_covered.add(j)
-                    break
-            elif next_e.edge_type == "LINE":
-                v_mid = _v(next_e.end)
-                found = False
-                for k, third_e in out_edges.get(v_mid, []):
-                    if k in _u_covered or k == i:
-                        continue
-                    if third_e.edge_type == "ARC":
-                        X = dist(arc.start, third_e.end)
-                        if X < U_X_THRESHOLD:
-                            _u_pairs.append((i, j, k))
-                            _u_covered.add(i)
-                            _u_covered.add(j)
-                            _u_covered.add(k)
-                            found = True
-                    break
-                if not found:
-                    for k, third_e in in_edges.get(v_mid, []):
-                        if k in _u_covered or k == i or k == j:
+                    _u_pairs.append(p)
+                else:
+                    _complex_pairs.append(p)
+            else:
+                _u_pairs.append(p)
+
+        # 단순 분기/전환선 (파란색, 대형 및 소형 모두)도 U 분기로 간주하여 대칭 clearance 및 병합 처리
+        for div_idx, mer_idx, top_line_idx in _plain_no_arm_pairs:
+            _u_pairs.append((div_idx, mer_idx))
+        for div_idx, mer_idx, top_line_idx in _small_x_no_arm_pairs:
+            if div_idx in _complex_lr_flat or mer_idx in _complex_lr_flat:
+                continue
+            _u_pairs.append((div_idx, mer_idx))
+        # 순수 U분기(same-dir no-arm): U쌍 등록 → second-pass가 단일 U링크로 그룹핑
+        for div_idx, mer_idx, top_line_idx in _u_no_arm_pairs:
+            _u_pairs.append((div_idx, mer_idx))
+        # U-arm 복합분기: arm의 두 분할 U 호를 U 쌍으로 등록 → 단일 U 링크로 보존(350mm J1)
+        for _ua in _u_arm_pairs:
+            _u_pairs.append(_ua[4])
+
+
+
+        # 그래프에서 직접 X < 1600 U쌍 추가 탐지 (전달받은 u_arc_indices 누락분 보완)
+
+        _u_pairs_len_before_scan = len(_u_pairs)
+        _u_covered = set(idx for pair in _u_pairs for idx in pair)
+        _u_covered |= set(idx for pair in _complex_pairs for idx in pair)
+        _u_covered |= _complex_lr_flat
+        _u_covered |= set(idx for pair in _n_pairs for idx in pair)
+        for i, arc in enumerate(unified_edges):
+            if arc.edge_type != "ARC" or i in _u_covered:
+                continue
+            
+            d = arc._data
+            sa = float(getattr(d, "dxf_start_deg", getattr(d, "start_deg", 0)))
+            ea = float(getattr(d, "dxf_end_deg", getattr(d, "end_deg", 0)))
+            ccw = (ea - sa) % 360.0
+            sweep = min(ccw, 360.0 - ccw)
+            if abs(sweep - 180.0) <= 5.0:
+                _u_pairs.append((i,))
+                _u_covered.add(i)
+                continue
+            v_end = _v(arc.end)
+            for j, next_e in out_edges.get(v_end, []):
+                if j in _u_covered:
+                    continue
+                if next_e.edge_type == "ARC":
+                    X = dist(arc.start, next_e.end)
+                    if X < U_X_THRESHOLD:
+                        _u_pairs.append((i, j))
+                        _u_covered.add(i)
+                        _u_covered.add(j)
+                        break
+                elif next_e.edge_type == "LINE":
+                    v_mid = _v(next_e.end)
+                    found = False
+                    for k, third_e in out_edges.get(v_mid, []):
+                        if k in _u_covered or k == i:
                             continue
                         if third_e.edge_type == "ARC":
-                            X = dist(arc.start, third_e.start)
+                            X = dist(arc.start, third_e.end)
                             if X < U_X_THRESHOLD:
                                 _u_pairs.append((i, j, k))
                                 _u_covered.add(i)
                                 _u_covered.add(j)
                                 _u_covered.add(k)
+                                found = True
                         break
+                    if not found:
+                        for k, third_e in in_edges.get(v_mid, []):
+                            if k in _u_covered or k == i or k == j:
+                                continue
+                            if third_e.edge_type == "ARC":
+                                X = dist(arc.start, third_e.start)
+                                if X < U_X_THRESHOLD:
+                                    _u_pairs.append((i, j, k))
+                                    _u_covered.add(i)
+                                    _u_covered.add(j)
+                                    _u_covered.add(k)
+                            break
 
-    # 그래프 스캔으로 새로 찾은 U 쌍만 객체로 저장 (post-clearance 인덱스 변환용)
-    _graph_scan_u_pair_objs = [
-        tuple(unified_edges[idx] for idx in pair)
-        for pair in _u_pairs[_u_pairs_len_before_scan:]
-    ]
+        # 그래프 스캔으로 새로 찾은 U 쌍만 객체로 저장 (post-clearance 인덱스 변환용)
+        _graph_scan_u_pair_objs = [
+            tuple(unified_edges[idx] for idx in pair)
+            for pair in _u_pairs[_u_pairs_len_before_scan:]
+        ]
 
-    # _un_flat: 복합분기 전체(div/merge arc + arm arcs) + U분기 + N분기 — L/R 탐색 제외
-    # _complex_pairs(X>1600 U후보)는 그냥 diverge 호직호 → L/R 루프가 J1+J2+J3 처리하도록 제외 안함
-    _un_flat = (_complex_lr_flat
-                | _intra_arm_u_idx
-                | set(idx for pair in _u_pairs for idx in pair)
-                | set(idx for pair in _n_pairs for idx in pair))
+        # _un_flat: 복합분기 전체(div/merge arc + arm arcs) + U분기 + N분기 — L/R 탐색 제외
+        # _complex_pairs(X>1600 U후보)는 그냥 diverge 호직호 → L/R 루프가 J1+J2+J3 처리하도록 제외 안함
+        _un_flat = (_complex_lr_flat
+                    | _intra_arm_u_idx
+                    | set(idx for pair in _u_pairs for idx in pair)
+                    | set(idx for pair in _n_pairs for idx in pair))
+    else:
+        _complex_lr_pairs = []
+        _small_x_complex_lr_pairs = []
+        _struct_complex_lr_pairs = []
+        _u_arm_pairs = []
+        _small_x_no_arm_pairs = []
+        _plain_no_arm_pairs = []
+        _line_center_plain_pairs = []
+        _complex_lr_flat = set()
+        _intra_arm_u_idx = set()
+        _preserve_line_arc_u_idx = set()
+        _graph_scan_u_pair_objs = []
+        U_X_THRESHOLD = 1601.0
+        _u_pairs = [tuple(p) for p in (u_arc_indices or [])]
+        _un_flat = (set(idx for pair in _u_pairs for idx in pair)
+                    | set(idx for pair in _n_pairs for idx in pair))
 
     # 분할 누적 버킷
     line_splits = defaultdict(list)   # edge_idx → [point, ...]
@@ -1839,7 +1864,74 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         _nu_junc_vkeys.add(_v(top_e.start))
         _nu_junc_vkeys.add(_v(top_e.end))
 
-    for i, arc in enumerate(unified_edges):
+    def _lr_diverge(arc):
+        """일반 분기(호 시작점 = 접합점): J1 접합점 350 상류 이동, J2 가상교점 P 기준 900, J3 호 끝 350."""
+        junction_pt = arc.start
+        orig_arc_start = arc.start
+        orig_arc_end = arc.end
+        v_js2 = _v(junction_pt)
+        for _, in_e in in_edges.get(v_js2, []):
+            if in_e.edge_type == "LINE":
+                _move_junction_upstream(junction_pt, arc, in_e, J1_DOWNSTREAM)
+                break
+        _split_j2_diverge_via_virtual_P(junction_pt, arc, LR_J2_UPSTREAM,
+                                        orig_arc_start=orig_arc_start, orig_arc_end=orig_arc_end)
+        ve = _v(arc.end)
+        for out_i, out_e in out_edges.get(ve, []):
+            if out_e.edge_type != "LINE":
+                continue
+            dx = out_e.end[0] - out_e.start[0]
+            dy = out_e.end[1] - out_e.start[1]
+            mag = math.hypot(dx, dy)
+            if mag < J3_ARC_LEN:
+                continue
+            ox, oy = dx / mag, dy / mag
+            new_pt = (_snap(arc.end[0] + ox * J3_ARC_LEN), _snap(arc.end[1] + oy * J3_ARC_LEN))
+            out_e.start = new_pt
+            out_e._data.p1 = new_pt
+            arc.end = new_pt
+            arc._data.p_end = new_pt
+
+    def _lr_merge(arc):
+        """일반 합류(호 끝점 = 접합점): J1 접합점 350 하류 이동, J2 가상교점 P 기준 900, J3 호 시작 350."""
+        junction_pt = arc.end
+        orig_arc_start = arc.start
+        orig_arc_end = arc.end
+        v_je2 = _v(junction_pt)
+        for _, out_e in out_edges.get(v_je2, []):
+            if out_e.edge_type == "LINE":
+                _move_junction_downstream(junction_pt, arc, out_e, J1_DOWNSTREAM)
+                break
+        _split_j2_via_virtual_P(junction_pt, arc, LR_J2_UPSTREAM,
+                                orig_arc_start=orig_arc_start, orig_arc_end=orig_arc_end)
+        vs = _v(arc.start)
+        for in_i, in_e in in_edges.get(vs, []):
+            if in_e.edge_type != "LINE":
+                continue
+            dx = in_e.end[0] - in_e.start[0]
+            dy = in_e.end[1] - in_e.start[1]
+            mag = math.hypot(dx, dy)
+            if mag < J3_ARC_LEN:
+                continue
+            ox, oy = dx / mag, dy / mag
+            new_pt = (_snap(arc.start[0] - ox * J3_ARC_LEN), _snap(arc.start[1] - oy * J3_ARC_LEN))
+            in_e.end = new_pt
+            in_e._data.p2 = new_pt
+            arc.start = new_pt
+            arc._data.p_start = new_pt
+
+    if _module_mode:
+        # 모듈 판정: 분기 호와 역할(분기/합류)이 모듈에서 정해져 들어온다 — 접합점 차수 검사를 하지 않는다.
+        for i, role in module_judgment.get("lr_arcs", []):
+            arc = unified_edges[i]
+            if arc.edge_type != "ARC":
+                continue
+            if role == "diverge" and _v(arc.start) not in _nu_junc_vkeys:
+                _lr_diverge(arc)
+            elif role == "merge" and _v(arc.end) not in _nu_junc_vkeys:
+                _lr_merge(arc)
+
+    for i, arc in ([] if _module_mode else enumerate(unified_edges)):
         if arc.edge_type != "ARC":
             continue
         if i in _un_flat:
@@ -1878,58 +1970,10 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         )
 
         if is_diverge and _v(arc.start) not in _nu_junc_vkeys:
-            junction_pt = arc.start
-            orig_arc_start = arc.start
-            orig_arc_end = arc.end
-            v_js2 = _v(junction_pt)
-            for _, in_e in in_edges.get(v_js2, []):
-                if in_e.edge_type == "LINE":
-                    _move_junction_upstream(junction_pt, arc, in_e, J1_DOWNSTREAM)
-                    break
-            _split_j2_diverge_via_virtual_P(junction_pt, arc, LR_J2_UPSTREAM,
-                                            orig_arc_start=orig_arc_start, orig_arc_end=orig_arc_end)
-            ve = _v(arc.end)
-            for out_i, out_e in out_edges.get(ve, []):
-                if out_e.edge_type != "LINE":
-                    continue
-                dx = out_e.end[0] - out_e.start[0]
-                dy = out_e.end[1] - out_e.start[1]
-                mag = math.hypot(dx, dy)
-                if mag < J3_ARC_LEN:
-                    continue
-                ox, oy = dx / mag, dy / mag
-                new_pt = (_snap(arc.end[0] + ox * J3_ARC_LEN), _snap(arc.end[1] + oy * J3_ARC_LEN))
-                out_e.start = new_pt
-                out_e._data.p1 = new_pt
-                arc.end = new_pt
-                arc._data.p_end = new_pt
+            _lr_diverge(arc)
 
         if is_merge and _v(arc.end) not in _nu_junc_vkeys:
-            junction_pt = arc.end
-            orig_arc_start = arc.start
-            orig_arc_end = arc.end
-            v_je2 = _v(junction_pt)
-            for _, out_e in out_edges.get(v_je2, []):
-                if out_e.edge_type == "LINE":
-                    _move_junction_downstream(junction_pt, arc, out_e, J1_DOWNSTREAM)
-                    break
-            _split_j2_via_virtual_P(junction_pt, arc, LR_J2_UPSTREAM,
-                                    orig_arc_start=orig_arc_start, orig_arc_end=orig_arc_end)
-            vs = _v(arc.start)
-            for in_i, in_e in in_edges.get(vs, []):
-                if in_e.edge_type != "LINE":
-                    continue
-                dx = in_e.end[0] - in_e.start[0]
-                dy = in_e.end[1] - in_e.start[1]
-                mag = math.hypot(dx, dy)
-                if mag < J3_ARC_LEN:
-                    continue
-                ox, oy = dx / mag, dy / mag
-                new_pt = (_snap(arc.start[0] - ox * J3_ARC_LEN), _snap(arc.start[1] - oy * J3_ARC_LEN))
-                in_e.end = new_pt
-                in_e._data.p2 = new_pt
-                arc.start = new_pt
-                arc._data.p_start = new_pt
+            _lr_merge(arc)
 
     # ------------------ [일반 ARC — 단순 통과 (분기/합류 없음)] ------------------
     # in: LINE 1개, ARC 0개 / out: LINE 1개, ARC 0개 인 arc의 양 끝점을 350mm 이격
@@ -1938,8 +1982,9 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
                         | set(idx for pair in _complex_lr_pairs + _small_x_complex_lr_pairs
                               for idx in [pair[0], pair[1]])
                         | set(idx for d, m, t in _small_x_no_arm_pairs for idx in [d, m]))
+    # (모듈 판정 모드에서는 아래 두 형상 탐지 — 맞닿은 호 U, 호-직-호 — 를 하지 않는다)
     _direct_u_arc_idx = set()
-    for _ui, _ua in enumerate(unified_edges):
+    for _ui, _ua in ([] if _module_mode else enumerate(unified_edges)):
         if _ua.edge_type != "ARC" or _ui in _all_handled_arc:
             continue
         _uv = _v(_ua.end)
@@ -1952,7 +1997,7 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
                 _direct_u_arc_idx.add(_uj)
     _direct_plain_arc_idx = set()
     _n_pair_arc_idx = set(idx for _pair in _n_pairs for idx in _pair)
-    for _ai, _arc in enumerate(unified_edges):
+    for _ai, _arc in ([] if _module_mode else enumerate(unified_edges)):
         if _arc.edge_type != "ARC":
             continue
         if _ai in _direct_u_arc_idx or _ai in _n_pair_arc_idx:
@@ -1998,38 +2043,9 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
                 break
     _plain_arc_indices = set(_plain_no_arm_arc_idx)  # 일반 호직호(arm=[] X>=1601) 합류
     _plain_arc_indices |= _direct_plain_arc_idx
-    for i, arc in enumerate(unified_edges):
-        if arc.edge_type != "ARC":
-            continue
-        if i in _direct_plain_arc_idx:
-            continue
-        if i in _plain_arc_indices:
-            continue
-        if i in _all_handled_arc:
-            continue
-        if i in _direct_u_arc_idx:
-            continue
-        vs = _v(arc.start)
-        ve = _v(arc.end)
-        in_vs  = in_edges.get(vs, [])
-        out_vs = out_edges.get(vs, [])
-        in_ve  = in_edges.get(ve, [])
-        out_ve = out_edges.get(ve, [])
-        # 단순 통과: arc.start 쪽 in=LINE 1, arc=0 / out=LINE 0, arc=1(자기자신)
-        #            arc.end 쪽  in=LINE 0, arc=1(자기자신) / out=LINE 1, arc=0
-        is_plain = (
-            sum(1 for _, e in in_vs  if e.edge_type == "LINE") == 1 and
-            sum(1 for _, e in in_vs  if e.edge_type == "ARC")  == 0 and
-            sum(1 for _, e in out_vs if e.edge_type == "LINE") == 0 and
-            sum(1 for _, e in out_vs if e.edge_type == "ARC")  == 1 and
-            sum(1 for _, e in in_ve  if e.edge_type == "LINE") == 0 and
-            sum(1 for _, e in in_ve  if e.edge_type == "ARC")  == 1 and
-            sum(1 for _, e in out_ve if e.edge_type == "LINE") == 1 and
-            sum(1 for _, e in out_ve if e.edge_type == "ARC")  == 0
-        )
-        if not is_plain:
-            continue
-        _plain_arc_indices.add(i)
+
+    def _plain_offset(arc, in_vs, out_ve):
+        """단순 통과 호: 양 끝을 인접 직선 안으로 350mm 이격(호가 직선을 흡수). 회전방향은 옮기기 전에 고정."""
         from map_exporter import arc_link_type_from_arcseg
         arc.forced_link_type = arc_link_type_from_arcseg(arc._data)
         for _, in_e in in_vs:
@@ -2066,6 +2082,49 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
             arc._data.p_end = new_pt
             _update_arc_deg(arc, new_pt, is_start=False)
             break
+
+    if _module_mode:
+        # 모듈 판정: 단순 통과 곡선 호(CURVE 모듈, W≥1601 아치에서 접합점에 안 붙은 호)가 모듈에서 정해져 들어온다.
+        for i in module_judgment.get("corner_arcs", []):
+            arc = unified_edges[i]
+            if arc.edge_type != "ARC" or i in _plain_arc_indices:
+                continue
+            _plain_arc_indices.add(i)
+            _plain_offset(arc, in_edges.get(_v(arc.start), []), out_edges.get(_v(arc.end), []))
+
+    for i, arc in ([] if _module_mode else enumerate(unified_edges)):
+        if arc.edge_type != "ARC":
+            continue
+        if i in _direct_plain_arc_idx:
+            continue
+        if i in _plain_arc_indices:
+            continue
+        if i in _all_handled_arc:
+            continue
+        if i in _direct_u_arc_idx:
+            continue
+        vs = _v(arc.start)
+        ve = _v(arc.end)
+        in_vs  = in_edges.get(vs, [])
+        out_vs = out_edges.get(vs, [])
+        in_ve  = in_edges.get(ve, [])
+        out_ve = out_edges.get(ve, [])
+        # 단순 통과: arc.start 쪽 in=LINE 1, arc=0 / out=LINE 0, arc=1(자기자신)
+        #            arc.end 쪽  in=LINE 0, arc=1(자기자신) / out=LINE 1, arc=0
+        is_plain = (
+            sum(1 for _, e in in_vs  if e.edge_type == "LINE") == 1 and
+            sum(1 for _, e in in_vs  if e.edge_type == "ARC")  == 0 and
+            sum(1 for _, e in out_vs if e.edge_type == "LINE") == 0 and
+            sum(1 for _, e in out_vs if e.edge_type == "ARC")  == 1 and
+            sum(1 for _, e in in_ve  if e.edge_type == "LINE") == 0 and
+            sum(1 for _, e in in_ve  if e.edge_type == "ARC")  == 1 and
+            sum(1 for _, e in out_ve if e.edge_type == "LINE") == 1 and
+            sum(1 for _, e in out_ve if e.edge_type == "ARC")  == 0
+        )
+        if not is_plain:
+            continue
+        _plain_arc_indices.add(i)
+        _plain_offset(arc, in_vs, out_ve)
 
     # ------------------ [흡수된 ARC 이격] ------------------
     def _drag_other_edges_at(old_pt, new_pt, skip_ids):
@@ -2272,7 +2331,7 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
         _out_new[_v(_ne.start)].append((_ni, _ne))
         _in_new[_v(_ne.end)].append((_ni, _ne))
     _direct_u_new = set()
-    for _ni, _ne in enumerate(new_unified_edges):
+    for _ni, _ne in ([] if _module_mode else enumerate(new_unified_edges)):
         if _ne.edge_type != "ARC":
             continue
         _nv = _v(_ne.end)

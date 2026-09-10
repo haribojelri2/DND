@@ -91,7 +91,7 @@ def decide_modules(doc, cfg: Optional[dict]) -> Tuple[Optional[List["ModuleInsta
         return None, "분기 판정: 기존 형상 판정 (config module_judgment.mode=off)"
     modules = read_modules(doc)
     if modules or mode == "on":
-        return modules, (f"분기 판정: CAD 모듈 정보 사용 — 기본 모듈 {len(modules)}개 읽음 "
+        return modules, (f"분기 판정: CAD 모듈 정보 사용 - 기본 모듈 {len(modules)}개 읽음 "
                          f"(형상으로 분기를 추정하지 않음)")
     return None, "분기 판정: 도면에 기본 모듈이 없어 기존 형상 판정 사용"
 
@@ -369,13 +369,13 @@ def _instance(no: int, ins, m) -> Optional[ModuleInstance]:
         idx, R, L, W, A = xd
         src = "XData"
         if bn is not None and bn[0] != idx:
-            notes.append(f"블록 이름({DEFS[bn[0]][0]})과 XData({DEFS[idx][0]}) 종류가 다름 — XData 사용")
+            notes.append(f"블록 이름({DEFS[bn[0]][0]})과 XData({DEFS[idx][0]}) 종류가 다름 - XData 사용")
     elif bn is not None:
         idx, R, L, W, A = bn
         W = W if W is not None else DEF_W
         A = A if A is not None else DEF_A
         src = "블록이름"
-        notes.append("XData 없음 — 블록 이름으로 판정")
+        notes.append("XData 없음 - 블록 이름으로 판정")
     else:
         return None
     R, L, W, A = clamp(idx, R, L, W, A)
@@ -385,7 +385,7 @@ def _instance(no: int, ins, m) -> Optional[ModuleInstance]:
     sx, sy = math.hypot(ux[0], ux[1]), math.hypot(uy[0], uy[1])
     det = ux[0] * uy[1] - ux[1] * uy[0]
     if abs(sx - sy) > 1e-6 * max(sx, sy, 1.0):
-        notes.append(f"축척이 가로·세로 다름({sx:g}×{sy:g}) — 호가 원이 아니므로 평균 축척 사용")
+        notes.append(f"축척이 가로·세로 다름({sx:g}×{sy:g}) - 호가 원이 아니므로 평균 축척 사용")
     scale = 0.5 * (sx + sy)
 
     loc_p, loc_f = build_local(idx, R, L, W, A)
@@ -590,7 +590,7 @@ class ModuleJudge:
             for f in mod.features:
                 if f.missing:
                     roles = ", ".join(ROLE_KO.get(mod.pieces[i].role, mod.pieces[i].role) for i in f.missing)
-                    mod.notes.append(f"도면에서 못 찾은 부분: {roles} — 색·레이어 필터 또는 형상 수정 여부 확인")
+                    mod.notes.append(f"도면에서 못 찾은 부분: {roles} - 색·레이어 필터 또는 형상 수정 여부 확인")
 
     def _arch_is_u(self, f: Feature, *, ori: bool, mod: ModuleInstance) -> bool:
         if ori:
@@ -600,7 +600,7 @@ class ModuleJudge:
     def _chained(self, edges, f: Feature, mod: ModuleInstance, label: str) -> Optional[Tuple[int, ...]]:
         order = _chain(_present(edges, f.edges), self.tol)
         if order is None:
-            mod.notes.append(f"{label}: 엣지가 한 방향으로 이어지지 않음(진행방향 불일치) — 병합 안 함")
+            mod.notes.append(f"{label}: 엣지가 한 방향으로 이어지지 않음(진행방향 불일치) - 병합 안 함")
             return None
         return _indices(edges, order)
 
@@ -645,7 +645,7 @@ class ModuleJudge:
                             u_pairs.append(g)
                             mod.judged.append(f"U분기(W {f.width:.0f} < {self.u_max:.0f})")
                         else:
-                            mod.judged.append("U분기 — 방향 불일치로 제외")
+                            mod.judged.append("U분기 - 방향 불일치로 제외")
                     else:
                         # W ≥ 1601: U 아님. 접합점에 붙은 호 = 일반 분기, 나머지 호 = 단순 통과 곡선
                         roles = []
@@ -670,9 +670,9 @@ class ModuleJudge:
                         n_pairs.append(g)
                         mod.judged.append(f"N분기(대각 {f.diag:.0f})")
                     else:
-                        mod.judged.append("N분기 — 방향 불일치로 제외")
+                        mod.judged.append("N분기 - 방향 불일치로 제외")
                 elif f.kind == "y":
-                    mod.judged.append("Y — 대기 노드 스펙 없음(호는 L/R 링크)")
+                    mod.judged.append("Y - 대기 노드 스펙 없음(호는 L/R 링크)")
         self._spacing_check(edges, u_pairs, n_pairs, lr_arcs, corner_arcs)
         return {"u_pairs": u_pairs, "n_pairs": n_pairs, "lr_arcs": lr_arcs, "corner_arcs": corner_arcs}
 
@@ -715,7 +715,7 @@ class ModuleJudge:
                 mx, my = (e.start[0] + e.end[0]) * 0.5, (e.start[1] + e.end[1]) * 0.5
                 self.spacing_warnings.append(
                     f"직선 {L:.0f}mm 에 대기 이격 {v:.0f}mm 필요(남는 길이 {max(L - v, 0.0):.0f}mm) "
-                    f"— 이격 생략 또는 노드 겹침 @({mx:.0f},{my:.0f})")
+                    f"- 이격 생략 또는 노드 겹침 @({mx:.0f},{my:.0f})")
 
     def _lr_roles(self, edges, f: Feature, mod: ModuleInstance, lr_arcs: list) -> List[str]:
         roles = []
@@ -724,7 +724,7 @@ class ModuleJudge:
                 continue
             j = _near_junction(e, f.junctions, self.tol)
             if j is None:
-                mod.notes.append("분기 호가 접합점에 닿지 않음 — 분기 규칙 미적용")
+                mod.notes.append("분기 호가 접합점에 닿지 않음 - 분기 규칙 미적용")
                 continue
             if _d(e.start, j) <= self.tol:
                 lr_arcs.append((_indices(edges, [e])[0], "diverge"))
@@ -757,14 +757,14 @@ class ModuleJudge:
         present = _present(edges, f.edges)
         arcs_ = [e for e in present if e.edge_type == "ARC"]
         if len(arcs_) < 2:
-            mod.notes.append(f"{label}: 이격 후 호를 찾지 못함 — 병합 안 함")
+            mod.notes.append(f"{label}: 이격 후 호를 찾지 못함 - 병합 안 함")
             return None
         order = _chain(present, self.tol)
         if order is None:
             # 가운데 직선이 쪼개졌거나 사라진 경우 — 첫 호 끝에서 다음 호 시작까지 그래프로 잇는다
             order = _bridge(edges, arcs_, self.tol)
         if order is None:
-            mod.notes.append(f"{label}: 엣지가 한 방향으로 이어지지 않음 — 병합 안 함")
+            mod.notes.append(f"{label}: 엣지가 한 방향으로 이어지지 않음 - 병합 안 함")
             return None
         return _indices(edges, order)
 
@@ -774,12 +774,12 @@ class ModuleJudge:
         c = Counter(m.name for m in self.modules)
         lines = [f"모듈 {len(self.modules)}개: " + ", ".join(f"{k} {v}" for k, v in sorted(c.items()))]
         if self.free_arc_count:
-            lines.append(f"[주의] 모듈에 속하지 않은 호 {self.free_arc_count}개 — 분기 판정 없이 L/R 링크로만 출력")
+            lines.append(f"[주의] 모듈에 속하지 않은 호 {self.free_arc_count}개 - 분기 판정 없이 L/R 링크로만 출력")
         if self.conflicts:
-            lines.append(f"[주의] 두 모듈에 겹쳐 대응된 엣지 {self.conflicts}개 — 먼저 대응된 모듈 기준")
+            lines.append(f"[주의] 두 모듈에 겹쳐 대응된 엣지 {self.conflicts}개 - 먼저 대응된 모듈 기준")
         n_notes = sum(1 for m in self.modules if m.notes)
         if n_notes:
-            lines.append(f"[주의] 확인 필요한 모듈 {n_notes}개 — _modules.csv 의 비고 참고")
+            lines.append(f"[주의] 확인 필요한 모듈 {n_notes}개 - _modules.csv 의 비고 참고")
         for w in self.spacing_warnings:
             lines.append("[주의] " + w)
         return lines

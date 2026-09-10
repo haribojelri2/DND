@@ -235,7 +235,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     save_map(str(MAP_OUT), nodes, links, header="#LSL - Jcolab", ports=stb_ports)
     _self_loops = sum(1 for _l in links if _l.start_node_id == _l.end_node_id)
     if _self_loops:
-        log(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 — 대기 노드 두 개가 "
+        log(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 - 대기 노드 두 개가 "
             f"{INTER_MERGE_TOL:.0f}mm 안에 겹침(분기·곡선 사이 직선이 짧음)")
 
     # 정형화 부품 수량 집계 (플러그인으로 작도한 도면일 때만 산출)
@@ -272,7 +272,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
             mjudge.save_csv(str(MODULES_OUT))
             log(f"저장됨: {MODULES_OUT}")
         except OSError as _e:
-            log(f"[경고] 모듈 CSV 를 저장하지 못했습니다: {_e.strerror} — {MODULES_OUT}")
+            log(f"[경고] 모듈 CSV 를 저장하지 못했습니다: {_e.strerror} - {MODULES_OUT}")
 
     log(f"[최종] NODE {len(nodes)}개  LINK {len(links)}개  STB포트 {len(stb_ports)}개  (대기 노드 포함)")
     log(f"저장됨: {MAP_OUT}")

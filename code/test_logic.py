@@ -240,7 +240,7 @@ save_map(
 print(f"[완료] {MAP_OUT} 저장됨")
 _self_loops = sum(1 for _l in links if _l.start_node_id == _l.end_node_id)
 if _self_loops:
-    print(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 — 대기 노드 두 개가 "
+    print(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 - 대기 노드 두 개가 "
           f"{INTER_MERGE_TOL:.0f}mm 안에 겹침(분기·곡선 사이 직선이 짧음)")
 
 # 모듈 판정 보고: 모듈별 종류·R/L/W/A·판정 결과·확인 필요 사항

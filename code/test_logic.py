@@ -13,6 +13,8 @@ from topology import *
 from map_exporter import export_map_from_unified_edges, find_un_branch_merge_groups, find_un_branch_merge_groups_by_x, save_map
 from topology import insert_clearance_nodes
 from port_extractor import extract_stb_ports, collect_port_nodes_by_color
+from part_counter import (count_parts, count_geometry, save_parts_csv,
+                          summary_text, print_table)
 
 # ---------------------------------------------------------
 # config 로드
@@ -52,6 +54,11 @@ N_BRANCH_MIN_ARC_SWEEP_DEG    = _bd["n_branch_min_arc_sweep_deg"]
 N_BRANCH_DIAGONAL_AXIS_TOL_DEG = _bd["n_branch_diagonal_axis_tol_deg"]
 SCALE_TO_MM                   = _bd["scale_to_mm"]
 U_BRANCH_ARC_SUM_TARGET_MM    = _bd.get("u_branch_arc_sum_target_mm", 2000.0) + 350.0
+# 표준 호 반지름 R — 아래 두 값이 여기서 파생된다(하드코딩 금지)
+RAIL_ARC_RADIUS_MM            = _bd.get("rail_arc_radius_mm", 480.0)
+RAIL_ARC_RADIUS_TOL_MM        = _bd.get("rail_arc_radius_tol_mm", 5.0)
+# ori U 폭 게이트 = 2R+50. tight 호-호 U(폭 2R)만 통과, 3R U턴브릿지는 제외
+ORI_U_X_THRESHOLD_MM          = 2.0 * RAIL_ARC_RADIUS_MM + 50.0
 
 # ---------------------------------------------------------
 _cf = _cfg.get("color_filter", {})
@@ -88,12 +95,16 @@ nodes, links = export_map_from_unified_edges(
     short_straight_threshold=SHORT_STRAIGHT_THRESHOLD,
     header="#LSL - Jcolab",
     u_branch_arc_sum_target_mm=U_BRANCH_ARC_SUM_TARGET_MM,
-    u_x_threshold_mm=950.0,  # ori는 폭~900 호-호 U만 (호직호·반지름 큰 U 제외). 최종 맵은 1601로 별도 기준
+    u_x_threshold_mm=ORI_U_X_THRESHOLD_MM,  # =2R+50. ori는 tight 호-호 U만 (호직호·반지름 큰 U 제외). 최종 맵은 1601로 별도 기준
+    line_arc_line_u_radius_mm=RAIL_ARC_RADIUS_MM,
+    line_arc_line_u_radius_tol_mm=RAIL_ARC_RADIUS_TOL_MM,
 )
 _extra_ori = collect_port_nodes_by_color(doc, PORT_COLORS)
 stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1, extra_port_nodes=_extra_ori)
 nodes.extend(new_t_nodes)
 save_map(str(ORI_MAP_OUT), nodes, links, header="#LSL - Jcolab", ports=stb_ports)
+# ori 는 대기(clearance) 노드 삽입 전 스냅샷 — 최종 맵과 개수가 다르다
+print(f"[ori] NODE: {len(nodes)}개, LINK: {len(links)}개, STB 포트: {len(stb_ports)}개")
 print(f"[완료] 원본: {ORI_MAP_OUT} 저장됨")
 if DIRECTION.upper() == "CW":
     unified_edges = list(reversed(unified_edges))
@@ -178,6 +189,8 @@ nodes, links = export_map_from_unified_edges(
     scale_to_mm=SCALE_TO_MM,
     short_straight_threshold=SHORT_STRAIGHT_THRESHOLD,
     precomputed_merge_groups=merge_groups_x,
+    line_arc_line_u_radius_mm=RAIL_ARC_RADIUS_MM,
+    line_arc_line_u_radius_tol_mm=RAIL_ARC_RADIUS_TOL_MM,
     header="#LSL - Jcolab",
 )
 
@@ -191,7 +204,7 @@ stb_ports, new_t_nodes, _ = extract_stb_ports(
 )
 nodes.extend(new_t_nodes)
 
-print(f"[결과] NODE: {len(nodes)}개, LINK: {len(links)}개, STB 포트: {len(stb_ports)}개, 신규 T노드: {len(new_t_nodes)}개")
+print(f"[최종] NODE: {len(nodes)}개, LINK: {len(links)}개, STB 포트: {len(stb_ports)}개, 신규 T노드: {len(new_t_nodes)}개 (대기 노드 포함)")
 
 save_map(
     str(MAP_OUT),
@@ -201,3 +214,26 @@ save_map(
     ports=stb_ports,
 )
 print(f"[완료] {MAP_OUT} 저장됨")
+
+# 정형화 부품 수량 집계 (플러그인으로 작도한 도면일 때만 산출)
+#  ※ 부가 산출물이므로 실패해도 map 변환 결과는 그대로 살린다.
+try:
+    _parts = count_parts(doc)
+    _geom = count_geometry(doc)      # 부품에 안 들어간 직선·호 (개수 + 총 길이)
+except Exception as _e:
+    _parts, _geom = None, None
+    print(f"[경고] 부품 집계 실패: {_e}")
+if _parts:
+    print(f"[부품] {summary_text(_parts)}")
+    if _geom:
+        print(f"[형상] 부품 제외 — 직선 {_geom['line_count']}개 {_geom['line_len']:,.0f}mm"
+              f" / 호 {_geom['arc_count']}개 {_geom['arc_len']:,.0f}mm")
+    PARTS_OUT = DXF_PATH.parent / (DXF_PATH.stem + "_parts.csv")
+    try:
+        save_parts_csv(str(PARTS_OUT), _parts, geom=_geom)
+        print(f"[부품] 저장됨: {PARTS_OUT}")
+    except OSError as _e:
+        # 대개 CSV 가 엑셀에서 열려 있어 잠긴 경우 — 파일 대신 화면으로 내보낸다
+        print(f"[경고] 부품 CSV 저장 실패({_e.strerror}): {PARTS_OUT}")
+        print("       엑셀 등에서 열려 있으면 닫고 다시 실행하세요. 아래는 같은 내용입니다.")
+        print_table(_parts, _geom)

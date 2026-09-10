@@ -12,6 +12,11 @@
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
+  <!-- Installer\ 는 별도 프로젝트(RailPluginSetup, net48)다. 기본 glob 이 빨아들이지 않게 제외. -->
+  <ItemGroup>
+    <Compile Remove="Installer\**" />
+  </ItemGroup>
+
   <!-- AutoCAD 2026 관리 어셈블리 (런타임 제공이므로 Private=false: DLL 복사 안 함) -->
   <ItemGroup>
     <Reference Include="acmgd">

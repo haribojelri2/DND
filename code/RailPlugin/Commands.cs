@@ -16,13 +16,14 @@ namespace RailPlugin
     //  로컬: 축=+Y, 시작(0,0). edge x=±960(폭1920). 조인트(bowtie) 호 r500·바920(±460)·바간격650(±325)·호center±825.
     //  양 끝 입구(flare): edge가 바깥으로 90°호(r=R)로 벌어짐 — 끝(y=0/length)에 고정(비율X).
     //  입구 throat: 입구 안쪽 둥근 닫힘(바+모서리 호 2개) — 끝에서 680/1180 오프셋 고정.
-    //  조인트 개수 = 차선수(고정). 위치는 길이에 비례(균등) — 길이 변하면 비율대로 이동(추가 아님).
+    //  조인트 개수 = 차선수(고정). 위치 = 양 끝 throat(입구)와 조인트들 사이 순수 직선 구간이 모두 같아지도록
+    //   등간격 배치(조인트 폭 ARC_DY 반영). 길이 변하면 비율대로 이동(추가 아님).
     public static class RailGeom
     {
         public const double HALF_W = 960.0, R = 500.0, NECK = 460.0;
         public const double BAR_DY = 325.0, ARC_DY = 825.0;
         public const double THROAT_BAR_DY = 680.0, THROAT_ARC_DY = 1180.0;  // 입구 throat: 끝에서 바/호center 거리
-        public const double MINLEN = 2000.0;
+        public const double MINLEN = 8000.0;   // 조인트 등간격 클리어 g>0 최소는 ~5660; 여유로 8000
 
         public static List<Entity> Build(double length, int jointCount)
         {
@@ -34,8 +35,15 @@ namespace RailPlugin
             ents.Add(new Line(new Point3d(HALF_W, 0, 0), new Point3d(HALF_W, length, 0)));
             AddEndCaps(ents, length);                                  // 양 끝 입구(flare) — 끝에 고정
             AddEndThroats(ents, length);                               // 입구 안쪽 throat(반쪽 조인트) — 끝에 고정
+            // 내부 조인트 — 양 끝 throat(입구)와 조인트들 사이의 "순수 직선 구간"이 모두 같아지도록 배치.
+            //  조인트는 폭이 있어(호가 edge에 닿는 지점이 중심±ARC_DY) 중심을 단순 1/3·2/3에 두면
+            //  가운데 구간이 양쪽 조인트에 ARC_DY씩 먹혀 바깥보다 짧아짐 → 폭을 빼고 등간격화.
+            //  경계 yLo=throat 호가 edge에 닿는 y(=THROAT_ARC_DY). 클리어 g=(S − 2·조인트수·ARC_DY)/(조인트수+1).
+            double yLo = THROAT_ARC_DY;              // 하단 입구 안쪽 경계 (edge 접점)
+            double yHi = length - THROAT_ARC_DY;     // 상단 입구 안쪽 경계 (edge 접점)
+            double g = (yHi - yLo - 2 * jointCount * ARC_DY) / (jointCount + 1);   // 균등 클리어 직선 길이
             for (int i = 0; i < jointCount; i++)
-                AddJoint(ents, length * (i + 1) / (jointCount + 1));   // 내부 조인트 — 비율 위치(균등)
+                AddJoint(ents, yLo + (i + 1) * g + (2 * i + 1) * ARC_DY);   // 조인트 폭 반영 등간격
             return ents;
         }
 
@@ -156,44 +164,68 @@ namespace RailPlugin
     {
         public const string APP = "RAILPLUGIN";
 
-        static void EnsureRegApp(Database db, Transaction tr)
+        static void EnsureRegApp(Database db, Transaction tr) { EnsureRegApp(db, tr, APP); }
+
+        public static void EnsureRegApp(Database db, Transaction tr, string app)
         {
             var rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
-            if (!rat.Has(APP))
+            if (!rat.Has(app))
             {
                 rat.UpgradeOpen();
-                var r = new RegAppTableRecord { Name = APP };
+                var r = new RegAppTableRecord { Name = app };
                 rat.Add(r); tr.AddNewlyCreatedDBObject(r, true);
             }
         }
 
-        static void FillBlock(BlockTableRecord btr, Transaction tr, double length, int count, int kind)
+        static void FillBlock(BlockTableRecord btr, Transaction tr, double length, int count, int kind, double width = 0, int lanes = 2,
+                              double modR = 0, double modA = 0)
         {
+            if (kind == 7) { ModuleGeom.Fill(btr, tr, count, modR, length, width, modA); return; }   // count=모듈 인덱스, length=L
+            if (kind == 6) { Rail34Geom.FillPart(btr, tr, count, width); return; }       // count=파츠 패밀리
+            if (kind == 5) { Rail34Geom.Fill(btr, tr, count, length, width); return; }   // count=변형 인덱스
+            if (kind == 4) { BlockRailGeom.Fill(btr, tr, length, count, width, lanes); return; }
             var ents = kind == 3 ? RailGeom3.Build(length) : RailGeom.Build(length, count);
             foreach (Entity e in ents)
             { btr.AppendEntity(e); tr.AddNewlyCreatedDBObject(e, true); }
         }
 
-        // XData: [APP, Real(length), Int16(count), Int16(kind)]. 구버전(2차선)은 kind 없음 → GetKind 기본 2.
-        static ResultBuffer XData(double length, int count, int kind) => new ResultBuffer(
-            new TypedValue((int)DxfCode.ExtendedDataRegAppName, APP),
-            new TypedValue((int)DxfCode.ExtendedDataReal, length),
-            new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)count),
-            new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)kind));
+        // XData: [APP, Real(length), Int16(count), Int16(kind), Real(width), Int16(lanes)] (width/lanes: kind4만).
+        //  구버전(2차선)은 kind 없음 → GetKind 기본 2. width/lanes 없음 → 기본값.
+        static ResultBuffer XData(double length, int count, int kind, double width = 0, int lanes = 2,
+                                  double modR = 0, double modA = 0)
+        {
+            var rb = new ResultBuffer(
+                new TypedValue((int)DxfCode.ExtendedDataRegAppName, APP),
+                new TypedValue((int)DxfCode.ExtendedDataReal, length),
+                new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)count),
+                new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)kind));
+            if (kind >= 4)
+            {
+                rb.Add(new TypedValue((int)DxfCode.ExtendedDataReal, width));
+                rb.Add(new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)lanes));
+            }
+            if (kind == 7)   // 기본 모듈: 3번째 Real=R(호 반지름), 4번째 Real=A(각도)
+            {
+                rb.Add(new TypedValue((int)DxfCode.ExtendedDataReal, modR));
+                rb.Add(new TypedValue((int)DxfCode.ExtendedDataReal, modA));
+            }
+            return rb;
+        }
 
-        public static ObjectId CreateRail(Database db, Transaction tr, Point3d pos, double length, int count, int kind = 2)
+        public static ObjectId CreateRail(Database db, Transaction tr, Point3d pos, double length, int count, int kind = 2, double width = 0, int lanes = 2,
+                                          double modR = 0, double modA = 0)
         {
             EnsureRegApp(db, tr);
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForWrite);
             string name = "RAIL_" + Guid.NewGuid().ToString("N").Substring(0, 8);
             var btr = new BlockTableRecord { Name = name, Origin = Point3d.Origin };
             ObjectId btrId = bt.Add(btr); tr.AddNewlyCreatedDBObject(btr, true);
-            FillBlock(btr, tr, length, count, kind);
+            FillBlock(btr, tr, length, count, kind, width, lanes, modR, modA);
 
             var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
             var br = new BlockReference(pos, btrId);
             ms.AppendEntity(br); tr.AddNewlyCreatedDBObject(br, true);
-            br.XData = XData(length, count, kind);
+            br.XData = XData(length, count, kind, width, lanes, modR, modA);
             return br.ObjectId;
         }
 
@@ -227,21 +259,253 @@ namespace RailPlugin
             return 2;
         }
 
-        public static double MinLen(int kind) => kind == 3 ? RailGeom3.MINLEN : RailGeom.MINLEN;
+        public static double MinLen(int kind) => kind == 7 ? 0.0
+            : (kind == 3 ? RailGeom3.MINLEN
+            : (kind == 4 ? BlockRailGeom.MINLEN : (kind == 5 ? Rail34Geom.MINLEN : RailGeom.MINLEN)));
 
-        // 길이 변경: kind/개수 유지, 블록 재정의 → 모든 참조 갱신
+        // 기본 모듈(kind7) 파라미터: R = 3번째 Real, A = 4번째 Real
+        public static double GetModR(BlockReference br) => NthReal(br, 3, ModuleGeom.DEF_R);
+        public static double GetModA(BlockReference br) => NthReal(br, 4, ModuleGeom.DEF_A);
+
+        static double NthReal(BlockReference br, int n, double fallback)
+        {
+            ResultBuffer rb = br.GetXDataForApplication(APP);
+            if (rb != null)
+            {
+                int i = 0;
+                foreach (TypedValue tv in rb)
+                    if (tv.TypeCode == (int)DxfCode.ExtendedDataReal)
+                    { i++; if (i == n) return (double)tv.Value; }
+            }
+            return fallback;
+        }
+
+        // 폭(W): kind4 XData의 2번째 Real. 없으면 기본값.
+        public static double GetWidth(BlockReference br)
+        {
+            ResultBuffer rb = br.GetXDataForApplication(APP);
+            if (rb != null)
+            {
+                int n = 0;
+                foreach (TypedValue tv in rb)
+                    if (tv.TypeCode == (int)DxfCode.ExtendedDataReal)
+                    { n++; if (n == 2) return (double)tv.Value; }
+            }
+            return GetKind(br) == 7 ? ModuleGeom.DEF_W : BlockCatalog.BAY_W_DEFAULT;
+        }
+
+        // 차선수(lanes): kind4 XData의 3번째 Int16 (count, kind, lanes). 없으면 2.
+        public static int GetLanes(BlockReference br)
+        {
+            ResultBuffer rb = br.GetXDataForApplication(APP);
+            if (rb != null)
+            {
+                int n = 0;
+                foreach (TypedValue tv in rb)
+                    if (tv.TypeCode == (int)DxfCode.ExtendedDataInteger16)
+                    { n++; if (n == 3) return (short)tv.Value; }
+            }
+            return 2;
+        }
+
+        // 길이 변경: kind/개수/폭/차선수 유지, 블록 재정의 → 모든 참조 갱신
         public static void SetLength(Transaction tr, BlockReference br, double length)
         {
             int kind = GetKind(br);
+            if (kind == 7) return;      // 기본 모듈은 크기 조절 대상이 아니다 (규격 변경 = RAILMODEDIT)
             double minlen = MinLen(kind);
             if (length < minlen) length = minlen;
             int count = GetCount(br);
+            double width = GetWidth(br);
+            int lanes = GetLanes(br);
+            double mr = GetModR(br), ma = GetModA(br);
             var btr = (BlockTableRecord)tr.GetObject(br.BlockTableRecord, OpenMode.ForWrite);
             foreach (ObjectId id in btr)
             { var e = (Entity)tr.GetObject(id, OpenMode.ForWrite); e.Erase(); }
-            FillBlock(btr, tr, length, count, kind);
+            FillBlock(btr, tr, length, count, kind, width, lanes, mr, ma);
             if (!br.IsWriteEnabled) br.UpgradeOpen();
-            br.XData = XData(length, count, kind);
+            br.XData = XData(length, count, kind, width, lanes, mr, ma);
+        }
+
+        // ── 기본 모듈(kind7) ────────────────────────────────────────────────
+        //  블록 정의는 "규격마다 하나"(ModuleGeom.EnsureBlock) — 같은 규격이면 재사용하고,
+        //  규격이 바뀔 때만 새 정의가 생긴다. 규격 변경 = 다른 정의로 바꿔 끼우는 것.
+
+        /// <summary>저장된 규격으로 모듈을 배치한다.</summary>
+        public static ObjectId PlaceModule(Database db, Transaction tr, Point3d pos, int idx,
+                                           double r, double l, double w, double a)
+        {
+            EnsureRegApp(db, tr);
+            ModuleGeom.Clamp(idx, ref r, ref l, ref w, ref a);
+            ObjectId defId = ModuleGeom.EnsureBlock(db, tr, idx, r, l, w, a);
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+            var br = new BlockReference(pos, defId);
+            ms.AppendEntity(br); tr.AddNewlyCreatedDBObject(br, true);
+            br.XData = XData(l, idx, 7, w, 2, r, a);
+            return br.ObjectId;
+        }
+
+        /// <summary>이미 배치된 모듈의 규격 변경 — 새 규격의 정의로 바꿔 끼운다(다른 인스턴스는 그대로).</summary>
+        public static void SetModuleParams(Transaction tr, BlockReference br, double r, double l, double w, double a)
+        {
+            if (GetKind(br) != 7) return;
+            int idx = GetCount(br);
+            ModuleGeom.Clamp(idx, ref r, ref l, ref w, ref a);
+            ObjectId defId = ModuleGeom.EnsureBlock(br.Database, tr, idx, r, l, w, a);
+            if (!br.IsWriteEnabled) br.UpgradeOpen();
+            br.BlockTableRecord = defId;
+            br.XData = XData(l, idx, 7, w, 2, r, a);
+        }
+
+        // kind5 폭 제한 — ★임의 폭 허용(스냅 없음)★
+        //  과거엔 900/1300 으로 튕겼으나(3피스가 BRANCH 코너 650×2 를 먹어 1300 미만 불가),
+        //  1300 미만은 호-직-호(ArcBridgeAt)로 조립하므로 900 이상 어떤 폭도 그대로 쓴다.
+        //  하한 900 = 호 r450 두 개가 맞닿는 물리적 최소(직선 0 = 반원).
+        public const double MINGAP = 900.0;
+        public static double SnapWidth5(BlockReference br, double w)
+        {
+            return w < MINGAP ? MINGAP : w;
+        }
+
+        // kind6(신축 파츠) 폭 제한: U턴 브릿지 계열은 900 이상 임의, 깔때기는 스텁 간격이라 하한만
+        public static double SnapWidth6(BlockReference br, double w)
+        {
+            int f = GetCount(br);
+            if (f < 0 || f >= Rail34Geom.PartFamG.Length) return w;
+            if (f <= 3) return w < MINGAP ? MINGAP : w;      // 2CH/4CH(±900)
+            return w < 200.0 ? 200.0 : w;                    // 깔때기(650/700/1000): 바만 신축
+        }
+
+        // 폭 변경 (kind4): U분기(아치/보타이) 바만 늘어나고 코너 블록은 통째 이동
+        public static void SetWidth(Transaction tr, BlockReference br, double width)
+        {
+            int kind = GetKind(br);
+            if (kind < 4 || kind == 7) return;   // 기본 모듈은 폭 조절 대상이 아니다 (규격 변경 = RAILMODEDIT)
+            if (kind == 4 && width < BlockRailGeom.MINW) width = BlockRailGeom.MINW;
+            if (kind == 5) width = SnapWidth5(br, width);
+            if (kind == 6) width = SnapWidth6(br, width);
+            double length = GetLength(br);
+            int count = GetCount(br);
+            int lanes = GetLanes(br);
+            double mr = GetModR(br), ma = GetModA(br);
+            if (kind == 7)
+            {
+                double rr = mr, ll = length, aa = ma;
+                ModuleGeom.Clamp(count, ref rr, ref ll, ref width, ref aa);   // 모듈별 하한(W ≥ 2R 등) 적용
+            }
+            var btr = (BlockTableRecord)tr.GetObject(br.BlockTableRecord, OpenMode.ForWrite);
+            foreach (ObjectId id in btr)
+            { var e = (Entity)tr.GetObject(id, OpenMode.ForWrite); e.Erase(); }
+            FillBlock(btr, tr, length, count, kind, width, lanes, mr, ma);
+            if (!br.IsWriteEnabled) br.UpgradeOpen();
+            br.XData = XData(length, count, kind, width, lanes, mr, ma);
+        }
+    }
+
+    // CAD→MAP 변환기(DXFtoMAP.exe) 실행기 — 리본 버튼/CAD2MAP 명령 공용.
+    //  찾는 순서: ① DLL 과 같은 폴더의 DXFtoMAP.exe (설치 프로그램이 함께 풀어둠)
+    //            ② 같은 폴더의 DXFtoMAP.path 텍스트 파일 첫 줄에 적힌 경로 (개발용 덮어쓰기)
+    //  도면이 하나도 안 열려 있어도 동작해야 하므로 Document 에 의존하지 않는다.
+    public static class Cad2Map
+    {
+        public const string EXE = "DXFtoMAP.exe";
+        public const string PATHFILE = "DXFtoMAP.path";
+
+        public static string Resolve()
+        {
+            string dir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            string p = System.IO.Path.Combine(dir, EXE);
+            if (System.IO.File.Exists(p)) return p;
+            string pf = System.IO.Path.Combine(dir, PATHFILE);
+            if (System.IO.File.Exists(pf))
+            {
+                foreach (string line in System.IO.File.ReadAllLines(pf))
+                {
+                    string t = line.Trim().Trim('"');
+                    if (t.Length > 0 && System.IO.File.Exists(t)) return t;
+                }
+            }
+            return null;
+        }
+
+        // 현재 도면을 "저장하지 않은 상태 그대로" DXF 로 내보낸다 (메모리의 DB 를 직접 씀).
+        //  저장 위치는 사용자가 대화상자에서 지정 (기본값: 도면 폴더 + 도면 이름.dxf, 미저장 도면은 내 문서).
+        //  변환기가 map 을 DXF 옆에 쓰므로 여기서 고른 폴더에 산출물이 모인다. 취소하면 null.
+        //  헤드리스 검증용: 환경변수 RAILPLUGIN_NODIALOG=1 이면 대화상자 없이 기본 경로 사용.
+        public static string ExportCurrent(Document doc)
+        {
+            string name = doc.Name ?? "Drawing";
+            string stem = System.IO.Path.GetFileNameWithoutExtension(name);
+            if (string.IsNullOrEmpty(stem)) stem = "Drawing";
+            bool saved = System.IO.Path.IsPathRooted(name) && System.IO.File.Exists(name);
+            string dir = saved ? System.IO.Path.GetDirectoryName(name)
+                               : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+            string path;
+            if (System.Environment.GetEnvironmentVariable("RAILPLUGIN_NODIALOG") == "1")
+                path = System.IO.Path.Combine(dir, stem + ".dxf");
+            else
+            {
+                var dlg = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "CAD→MAP 변환용 DXF 저장 위치 (map 도 같은 폴더에 생성됩니다)",
+                    Filter = "DXF 도면 (*.dxf)|*.dxf",
+                    DefaultExt = "dxf",
+                    AddExtension = true,
+                    OverwritePrompt = true,
+                    FileName = stem + ".dxf",
+                    InitialDirectory = dir,
+                };
+                if (dlg.ShowDialog() != true) return null;
+                path = dlg.FileName;
+            }
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+            using (doc.LockDocument())
+                doc.Database.DxfOut(path, 16, DwgVersion.Current);
+            return path;
+        }
+
+        public static string Launch() => Launch(null);
+
+        // 반환: 사용자에게 보여줄 결과 메시지 (성공/실패). doc 이 있으면 현재 도면을 DXF 로 내보내 변환기에 넘긴다.
+        public static string Launch(Document doc)
+        {
+            try
+            {
+                string exe = Resolve();
+                if (exe == null)
+                {
+                    string dir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    string msg = "CAD→MAP 변환기(" + EXE + ")를 찾지 못했습니다.\n\n" +
+                                 "설치 프로그램을 다시 실행하거나, 아래 폴더에 " + EXE + " 를 넣어 주세요.\n" + dir;
+                    try { System.Windows.MessageBox.Show(msg, "Rail — CAD→MAP", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning); } catch { }
+                    return msg;
+                }
+                string dxf = null, note = "";
+                if (doc != null)
+                {
+                    try
+                    {
+                        dxf = ExportCurrent(doc);
+                        if (dxf == null) note = " (저장 위치 지정을 취소함 — 변환기에서 DXF 를 직접 선택하세요)";
+                    }
+                    catch (System.Exception ex) { note = " (현재 도면 내보내기 실패: " + ex.Message + " — 변환기에서 DXF 를 직접 선택하세요)"; }
+                }
+                var psi = new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = System.IO.Path.GetDirectoryName(exe),
+                    Arguments = dxf != null ? "\"" + dxf + "\"" : "",
+                };
+                System.Diagnostics.Process.Start(psi);
+                return dxf != null
+                    ? "CAD→MAP 변환기 실행 — 현재 도면을 내보냄: " + dxf
+                    : "CAD→MAP 변환기 실행: " + exe + note;
+            }
+            catch (System.Exception ex)
+            {
+                return "CAD→MAP 변환기 실행 실패: " + ex.Message;
+            }
         }
     }
 
@@ -250,6 +514,16 @@ namespace RailPlugin
         public const double DEFAULT_LEN = 30000.0;
         public const int DEFAULT_LANES = 2;       // 2차선
         public const double DEFAULT_LEN3 = 46750.0;  // 3차선 native 길이
+
+        // CAD→MAP 변환기 실행 (리본 'Rail' 탭 > 변환 > CAD→MAP 버튼과 동일).
+        //  현재 도면을 저장 없이 DXF 로 내보내 변환기 입력칸에 채워 연다. Session 플래그 = 도면 0개여도 실행.
+        [CommandMethod("CAD2MAP", CommandFlags.Session)]
+        public void Cad2MapCmd()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            string msg = Cad2Map.Launch(doc);
+            if (doc != null) doc.Editor.WriteMessage("\n" + msg);
+        }
 
         // 2차선 생성: 위치 한 번 클릭 → 기본 길이로 생성 (이후 RAILLEN/그립으로 비율 조절)
         [CommandMethod("DRAWRAIL2")]
@@ -336,11 +610,59 @@ namespace RailPlugin
         public double Length;
         public bool IsBottom;
         public Point3d Pos0;
+        public bool IsWidth;      // true=폭 그립 (가로 드래그 → SetWidth)
+        public bool IsLeft;       // 폭 그립 좌측 여부 (우측 고정, 삽입점 이동)
+        public double Width;
+        public bool IsPort;       // true=기본 모듈 접속구 그립 (그 점을 잡고 모듈 전체를 옮긴다)
         public RailGrip(double len, bool bottom, Point3d pos0) { Length = len; IsBottom = bottom; Pos0 = pos0; }
     }
 
     public class RailGripOverrule : GripOverrule
     {
+        // 블록 정의(중첩 블록 포함) 안의 선·호 끝점을 모아 가장 왼쪽/오른쪽 끝점을 찾는다.
+        //  파츠는 카탈로그 블록을 중첩 삽입하는 경우가 많아 재귀가 필요하다. 같은 x 면 아래쪽 끝을 고른다.
+        internal static bool EndPointsX(BlockReference br, out Point3d left, out Point3d right)
+        {
+            left = right = Point3d.Origin;
+            try
+            {
+                var pts = new List<Point3d>();
+                using (Transaction tr = br.Database.TransactionManager.StartOpenCloseTransaction())
+                {
+                    var btr = tr.GetObject(br.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                    if (btr == null) return false;
+                    Collect(tr, btr, Matrix3d.Identity, pts, 0);
+                    tr.Commit();
+                }
+                if (pts.Count == 0) return false;
+                left = right = pts[0];
+                foreach (Point3d p in pts)
+                {
+                    if (p.X < left.X - 1e-6 || (Math.Abs(p.X - left.X) < 1e-6 && p.Y < left.Y)) left = p;
+                    if (p.X > right.X + 1e-6 || (Math.Abs(p.X - right.X) < 1e-6 && p.Y < right.Y)) right = p;
+                }
+                return true;
+            }
+            catch { return false; }
+        }
+
+        static void Collect(Transaction tr, BlockTableRecord btr, Matrix3d xf, List<Point3d> pts, int depth)
+        {
+            if (depth > 3) return;
+            foreach (ObjectId id in btr)
+            {
+                var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                var ln = ent as Line;
+                if (ln != null) { pts.Add(ln.StartPoint.TransformBy(xf)); pts.Add(ln.EndPoint.TransformBy(xf)); continue; }
+                var ac = ent as Arc;
+                if (ac != null) { pts.Add(ac.StartPoint.TransformBy(xf)); pts.Add(ac.EndPoint.TransformBy(xf)); continue; }
+                var nb = ent as BlockReference;
+                if (nb == null) continue;
+                var nd = tr.GetObject(nb.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                if (nd != null) Collect(tr, nd, xf * nb.BlockTransform, pts, depth + 1);
+            }
+        }
+
         public override void GetGripPoints(Entity e, GripDataCollection grips, double curViewUnitSize,
             int gripSize, Vector3d curViewDir, GetGripPointsFlags bitFlags)
         {
@@ -348,6 +670,37 @@ namespace RailPlugin
             {
                 var br = e as BlockReference;
                 double len = br != null ? RailFactory.GetLength(br) : -1;
+                // 기본 모듈(kind7): 크기 조절 그립은 없고, **접속 끝점마다 그립**을 준다.
+                //  선의 끝점 그립처럼 그 점을 잡아 끌면(객체 스냅 사용) 모듈 전체가 따라와 다른 끝점에 딱 붙는다.
+                if (br != null && RailFactory.GetKind(br) == 7)
+                {
+                    int mi = RailFactory.GetCount(br);
+                    if (mi >= 0 && mi < ModuleGeom.Defs.Length)
+                    {
+                        double mr = RailFactory.GetModR(br), mw = RailFactory.GetWidth(br), ma = RailFactory.GetModA(br);
+                        Point3d pos0 = br.Position;
+                        foreach (Point3d p in ModuleGeom.Ports(mi, mr, len, mw, ma))
+                            grips.Add(new RailGrip(len, false, pos0)
+                            { GripPoint = p.TransformBy(br.BlockTransform), IsPort = true });
+                        if (grips.Count > 0) return;
+                    }
+                    base.GetGripPoints(e, grips, curViewUnitSize, gripSize, curViewDir, bitFlags);
+                    return;
+                }
+                if (br != null && len >= 0 && RailFactory.GetKind(br) == 6)
+                {
+                    // 신축 파츠(kind6): 좌/우 폭 그립.
+                    //  ★그립은 형상의 실제 양 끝(가장 왼쪽/오른쪽 끝점)에 놓는다.
+                    //   예전에는 (0,650)·(W,650) 고정이라 파츠 종류·폭에 따라 형상에서 떨어져 보였다.
+                    double wc6 = RailFactory.GetWidth(br);
+                    Point3d p06 = br.Position;
+                    Point3d lp6, rp6;
+                    if (!EndPointsX(br, out lp6, out rp6))
+                    { lp6 = new Point3d(0, 650, 0); rp6 = new Point3d(wc6, 650, 0); }
+                    grips.Add(new RailGrip(0, false, p06) { GripPoint = rp6.TransformBy(br.BlockTransform), IsWidth = true, Width = wc6 });
+                    grips.Add(new RailGrip(0, false, p06) { GripPoint = lp6.TransformBy(br.BlockTransform), IsWidth = true, IsLeft = true, Width = wc6 });
+                    return;
+                }
                 if (len > 0)
                 {
                     // 레일엔 양 끝 리사이즈 그립 2개 (기본 이동 그립 미추가 → base 호출 안 함)
@@ -356,6 +709,19 @@ namespace RailPlugin
                     Point3d botPt = new Point3d(0, 0, 0).TransformBy(br.BlockTransform);
                     grips.Add(new RailGrip(len, false, pos0) { GripPoint = topPt });
                     grips.Add(new RailGrip(len, true,  pos0) { GripPoint = botPt });
+                    // 폭 그립 (kind4=블록 베이, kind5=0716 변형): 좌/우 중앙, 가로 드래그 → 바만 신축
+                    //  우측 그립=좌측 고정, 좌측 그립=우측 고정(삽입점 이동)
+                    int kind = RailFactory.GetKind(br);
+                    if (kind == 4 || kind == 5)
+                    {
+                        double wcur = RailFactory.GetWidth(br);
+                        double gxr = kind == 4 ? wcur : Rail34Geom.RightX(RailFactory.GetCount(br), wcur);
+                        double gxl = kind == 4 ? 0 : Rail34Geom.LeftX(RailFactory.GetCount(br));
+                        Point3d wPtR = new Point3d(gxr, len / 2.0, 0).TransformBy(br.BlockTransform);
+                        Point3d wPtL = new Point3d(gxl, len / 2.0, 0).TransformBy(br.BlockTransform);
+                        grips.Add(new RailGrip(len, false, pos0) { GripPoint = wPtR, IsWidth = true, Width = wcur });
+                        grips.Add(new RailGrip(len, false, pos0) { GripPoint = wPtL, IsWidth = true, IsLeft = true, Width = wcur });
+                    }
                     return;
                 }
             }
@@ -370,6 +736,61 @@ namespace RailPlugin
             RailGrip rg = null;
             foreach (GripData g in grips) if (g is RailGrip r) { rg = r; break; }
             if (rg == null || br == null) { base.MoveGripPointsAt(e, grips, offset, bitFlags); return; }
+            if (rg.IsPort)
+            {
+                // 접속구 그립: 형상은 그대로, 모듈 전체를 옮긴다(드래그 중 미리보기도 그대로 따라온다).
+                //  Pos0(드래그 시작 삽입점) 기준 절대 계산 — 여러 번 호출돼도 누적되지 않는다.
+                try
+                {
+                    if (!br.IsWriteEnabled) br.UpgradeOpen();
+                    br.Position = rg.Pos0 + offset;
+                }
+                catch { }
+                return;
+            }
+            if (rg.IsWidth)
+            {
+                // 폭 그립: 가로 드래그 → SetWidth (U분기 직선만 신축)
+                //  우측 그립=좌측 고정 / 좌측 그립=우측 고정(삽입점을 −ΔW 만큼 이동)
+                //  드래그 미리보기(비DB 클론)에서는 재생성 안 함 — 놓는 순간 1회 적용 (깨짐 방지)
+                if (e.ObjectId.IsNull) return;
+                try
+                {
+                    Vector3d ax = Vector3d.XAxis.TransformBy(br.BlockTransform).GetNormal();
+                    double dw = offset.DotProduct(ax);
+                    double newW = rg.IsLeft ? rg.Width - dw : rg.Width + dw;
+                    int kd = RailFactory.GetKind(br);
+                    if (kd == 4) { if (newW < BlockRailGeom.MINW) newW = BlockRailGeom.MINW; }
+                    else if (kd == 6) newW = RailFactory.SnapWidth6(br, newW);
+                    else if (kd == 7) return;      // 기본 모듈은 폭 그립 없음
+                    else newW = RailFactory.SnapWidth5(br, newW);
+                    if (Math.Abs(newW - RailFactory.GetWidth(br)) < 0.5) return;   // 무변화 → 재생성 생략
+                    Transaction topw = e.Database.TransactionManager.TopTransaction;
+                    if (topw != null)
+                    {
+                        if (!br.IsWriteEnabled) br.UpgradeOpen();
+                        if (rg.IsLeft) br.Position = rg.Pos0 + ax * (rg.Width - newW);
+                        RailFactory.SetWidth(topw, br, newW);
+                    }
+                    else
+                    {
+                        using (Transaction my = e.Database.TransactionManager.StartTransaction())
+                        {
+                            var brw = (BlockReference)my.GetObject(e.ObjectId, OpenMode.ForWrite);
+                            if (rg.IsLeft) brw.Position = rg.Pos0 + ax * (rg.Width - newW);
+                            RailFactory.SetWidth(my, brw, newW);
+                            my.Commit();
+                        }
+                    }
+                }
+                catch { }
+                return;
+            }
+            // ★드래그 성능★ 길이 그립도 폭 그립과 동일하게:
+            //  ① 드래그 미리보기(비DB 클론)에서는 재생성 안 함 — 놓는 순간 1회만 적용
+            //  ② 값이 안 변했으면 건너뜀
+            //  (예전엔 마우스 이동마다 블록 정의를 통째로 지우고 재생성 → 끊김 + Undo 스택 폭증)
+            if (e.ObjectId.IsNull) return;
             try
             {
                 Vector3d axis = Vector3d.YAxis.TransformBy(br.BlockTransform).GetNormal();
@@ -387,6 +808,7 @@ namespace RailPlugin
                     newLen = Math.Max(minlen, rg.Length + d);            // 아래 끝(삽입점) 고정
                     newPos = rg.Pos0;
                 }
+                if (Math.Abs(newLen - RailFactory.GetLength(br)) < 0.5) return;   // 무변화 → 재생성 생략
                 Transaction top = e.Database.TransactionManager.TopTransaction;
                 if (top != null)
                 {
@@ -446,6 +868,51 @@ namespace RailPlugin
         }
     }
 
+    // 리본 버튼 → CAD→MAP 변환기 실행. 명령창을 거치지 않고 바로 실행 (도면이 없어도 동작).
+    //  도면이 있으면 저장 없이 현재 상태를 DXF 로 내보내 변환기에 넘긴다.
+    public class Cad2MapHandler : System.Windows.Input.ICommand
+    {
+        public event System.EventHandler CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object p) => true;
+        public void Execute(object p)
+        {
+            Document doc = null;
+            try { doc = Application.DocumentManager.MdiActiveDocument; } catch { }
+            string msg = Cad2Map.Launch(doc);
+            try { if (doc != null) doc.Editor.WriteMessage("\n" + msg); } catch { }
+        }
+    }
+
+    // 드롭다운 항목 → 변형 생성 (Pending 설정 후 DRAWRAILV)
+    public class RailVariantHandler : System.Windows.Input.ICommand
+    {
+        readonly int _vi;
+        public RailVariantHandler(int vi) { _vi = vi; }
+        public event System.EventHandler CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object p) => true;
+        public void Execute(object p)
+        {
+            BlockRailCommands.PendingVariant = _vi;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null) doc.SendStringToExecute("DRAWRAILV ", true, false, true);
+        }
+    }
+
+    // 드롭다운 항목 → 부품 삽입 (Pending 설정 후 RAILPART)
+    public class RailPartHandler : System.Windows.Input.ICommand
+    {
+        readonly string _name;
+        public RailPartHandler(string name) { _name = name; }
+        public event System.EventHandler CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object p) => true;
+        public void Execute(object p)
+        {
+            BlockRailCommands.PendingPart = _name;
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc != null) doc.SendStringToExecute("RAILPART ", true, false, true);
+        }
+    }
+
     // 리본 탭("Rail") + 버튼 3개를 코드로 생성. 모든 단계 try/catch — 실패해도 명령/그립은 정상 동작.
     //  자동로드(.bundle) 시 Initialize()는 리본 생성 전에 돌 수 있어 ItemInitialized로 지연 생성.
     //  Ensure()는 멱등(탭 Id 중복 가드) — 워크스페이스 전환으로 탭이 사라지면 다시 호출해 복구 가능.
@@ -483,17 +950,30 @@ namespace RailPlugin
             {
                 var rc = Autodesk.Windows.ComponentManager.Ribbon;
                 if (rc == null) return;
+                ModuleRibbon.Ensure();      // 기본 모듈 탭 (자체 멱등 가드) — Rail 탭만 남아 있어도 복구된다
                 foreach (Autodesk.Windows.RibbonTab t in rc.Tabs)
                     if (t.Id == TAB_ID) return;
 
                 var tab = new Autodesk.Windows.RibbonTab { Title = "Rail", Id = TAB_ID };
-                var src = new Autodesk.Windows.RibbonPanelSource { Title = "Rail Tools" };
-                var panel = new Autodesk.Windows.RibbonPanel { Source = src };
-                tab.Panels.Add(panel);
 
-                src.Items.Add(MakeButton("2차선\n생성", "DRAWRAIL2", 2));
-                src.Items.Add(MakeButton("3차선\n생성", "DRAWRAIL3", 3));
-                src.Items.Add(MakeButton("길이\n변경", "RAILLEN", 0));
+                // 블록 조립 레일 — 3/4차선·부품은 드롭다운(종류 클릭 → 바로 생성)
+                var srcB = new Autodesk.Windows.RibbonPanelSource { Title = "블록 레일" };
+                var panelB = new Autodesk.Windows.RibbonPanel { Source = srcB };
+                tab.Panels.Add(panelB);
+                // 2차선 = 2rail 변형 8종 (구 베이형 DRAWRAILB는 완전 삭제)
+                srcB.Items.Add(MakeVariantDrop("2차선", 2, 30, 38));
+                srcB.Items.Add(MakeVariantDrop("3차선", 3, 0, 12));    // 0716 8종 + 신형 4종
+                srcB.Items.Add(MakeVariantDrop("4차선", 4, 12, 30));   // 0716 16종 + 신형 2종
+                srcB.Items.Add(MakePartDrop("부품"));
+                srcB.Items.Add(MakeButton("길이\n변경", "RAILLEN", 0));
+                srcB.Items.Add(MakeButton("폭\n변경", "RAILW", 0));
+                // 구버전 라인 레일(DRAWRAIL2/3, 파츠 미포함)은 리본에서 제거 — 명령 타이핑으로만 사용 가능
+
+                // 변환 — CAD→MAP 변환기(DXFtoMAP.exe) 실행. 설치 프로그램이 DLL 옆에 함께 풀어둔다.
+                var srcC = new Autodesk.Windows.RibbonPanelSource { Title = "변환" };
+                var panelC = new Autodesk.Windows.RibbonPanel { Source = srcC };
+                tab.Panels.Add(panelC);
+                srcC.Items.Add(MakeButton("CAD→MAP\n변환기", new Cad2MapHandler(), 6));
 
                 rc.Tabs.Add(tab);
             }
@@ -502,6 +982,7 @@ namespace RailPlugin
 
         public static void Remove()
         {
+            ModuleRibbon.Remove();
             try
             {
                 var rc = Autodesk.Windows.ComponentManager.Ribbon;
@@ -514,7 +995,69 @@ namespace RailPlugin
             catch { }
         }
 
+        // 변형 드롭다운: 누르면 목록(R3_W900_1H_2N … / R4_W650_2H_4N …, 「레일 네이밍 규칙.xlsx」) → 항목 클릭 = 즉시 생성 시작
+        static Autodesk.Windows.RibbonSplitButton MakeVariantDrop(string text, int iconKind, int lo, int hi)
+        {
+            var sb = new Autodesk.Windows.RibbonSplitButton
+            {
+                Text = text,
+                ShowText = true,
+                ShowImage = true,
+                Size = Autodesk.Windows.RibbonItemSize.Large,
+                Orientation = System.Windows.Controls.Orientation.Vertical,
+                ListStyle = Autodesk.Windows.RibbonSplitButtonListStyle.List,
+                IsSynchronizedWithCurrentItem = false,
+            };
+            try { sb.LargeImage = MakeIcon(iconKind, 32); sb.Image = MakeIcon(iconKind, 16); } catch { sb.ShowImage = false; }
+            for (int i = lo; i < hi; i++)
+            {
+                var v = Rail34Manifest.Variants[i];
+                var b = new Autodesk.Windows.RibbonButton
+                {
+                    Text = v.Name,
+                    ShowText = true,
+                    ShowImage = true,
+                    CommandHandler = new RailVariantHandler(i),
+                };
+                try { b.Image = MakeIcon(iconKind, 16); b.LargeImage = MakeIcon(iconKind, 32); } catch { b.ShowImage = false; }
+                sb.Items.Add(b);
+            }
+            return sb;
+        }
+
+        // 부품 드롭다운: 카탈로그 14종 + 크로스오버 부품 4종
+        static Autodesk.Windows.RibbonSplitButton MakePartDrop(string text)
+        {
+            var sb = new Autodesk.Windows.RibbonSplitButton
+            {
+                Text = text,
+                ShowText = true,
+                ShowImage = true,
+                Size = Autodesk.Windows.RibbonItemSize.Large,
+                Orientation = System.Windows.Controls.Orientation.Vertical,
+                ListStyle = Autodesk.Windows.RibbonSplitButtonListStyle.List,
+                IsSynchronizedWithCurrentItem = false,
+            };
+            try { sb.LargeImage = MakeIcon(5, 32); sb.Image = MakeIcon(5, 16); } catch { sb.ShowImage = false; }
+            foreach (string name in BlockCatalog.Parts.Keys)
+            {
+                var b = new Autodesk.Windows.RibbonButton
+                {
+                    Text = name,
+                    ShowText = true,
+                    ShowImage = true,
+                    CommandHandler = new RailPartHandler(name),
+                };
+                try { b.Image = MakeIcon(5, 16); b.LargeImage = MakeIcon(5, 32); } catch { b.ShowImage = false; }
+                sb.Items.Add(b);
+            }
+            return sb;
+        }
+
         static Autodesk.Windows.RibbonButton MakeButton(string text, string cmd, int kind)
+            => MakeButton(text, new RailCmdHandler(cmd), kind);
+
+        static Autodesk.Windows.RibbonButton MakeButton(string text, System.Windows.Input.ICommand handler, int kind)
         {
             var b = new Autodesk.Windows.RibbonButton
             {
@@ -523,7 +1066,7 @@ namespace RailPlugin
                 ShowImage = true,
                 Size = Autodesk.Windows.RibbonItemSize.Large,
                 Orientation = System.Windows.Controls.Orientation.Vertical,
-                CommandHandler = new RailCmdHandler(cmd),
+                CommandHandler = handler,
             };
             try
             {
@@ -534,7 +1077,8 @@ namespace RailPlugin
             return b;
         }
 
-        // 간단한 레일 모양 아이콘을 WPF로 그려 BitmapSource 생성. kind: 2/3=차선수, 0=길이변경(양방향 화살표).
+        // 간단한 레일 모양 아이콘을 WPF로 그려 BitmapSource 생성.
+        //  kind: 2/3/4=차선수, 5=부품, 6=CAD→MAP 변환(도면 → 화살표 → 노드/링크), 0=길이변경(양방향 화살표).
         static System.Windows.Media.ImageSource MakeIcon(int kind, int sz)
         {
             double s = sz / 32.0;
@@ -544,7 +1088,20 @@ namespace RailPlugin
             var dv = new System.Windows.Media.DrawingVisual();
             using (var dc = dv.RenderOpen())
             {
-                if (kind == 2)
+                if (kind == 6)
+                {
+                    // 왼쪽: 도면(사각형+선 2개), 가운데: 화살표, 오른쪽: 노드 2개 + 링크
+                    dc.DrawRectangle(null, edge, new System.Windows.Rect(P(3, 6), P(12, 26)));
+                    dc.DrawLine(bar, P(5, 12), P(10, 12));
+                    dc.DrawLine(bar, P(5, 18), P(10, 18));
+                    dc.DrawLine(edge, P(14, 16), P(19, 16));
+                    dc.DrawLine(edge, P(19, 16), P(17, 13));
+                    dc.DrawLine(edge, P(19, 16), P(17, 19));
+                    dc.DrawEllipse(System.Windows.Media.Brushes.SteelBlue, null, P(23, 9), 2.5 * s, 2.5 * s);
+                    dc.DrawEllipse(System.Windows.Media.Brushes.SteelBlue, null, P(28, 24), 2.5 * s, 2.5 * s);
+                    dc.DrawLine(bar, P(23, 9), P(28, 24));
+                }
+                else if (kind == 2)
                 {
                     dc.DrawLine(edge, P(10, 3), P(10, 29));
                     dc.DrawLine(edge, P(22, 3), P(22, 29));
@@ -556,6 +1113,21 @@ namespace RailPlugin
                     dc.DrawLine(edge, P(7, 3), P(7, 29));
                     dc.DrawLine(edge, P(16, 3), P(16, 29));
                     dc.DrawLine(edge, P(25, 3), P(25, 29));
+                }
+                else if (kind == 4)
+                {
+                    dc.DrawLine(edge, P(5, 3), P(5, 29));
+                    dc.DrawLine(edge, P(12, 3), P(12, 29));
+                    dc.DrawLine(edge, P(20, 3), P(20, 29));
+                    dc.DrawLine(edge, P(27, 3), P(27, 29));
+                    dc.DrawLine(bar, P(13, 16), P(19, 16));
+                }
+                else if (kind == 5)
+                {
+                    dc.DrawLine(edge, P(6, 26), P(6, 10));    // 부품(분기 코너) 모양
+                    dc.DrawLine(bar, P(6, 10), P(10, 6));
+                    dc.DrawLine(bar, P(10, 6), P(26, 6));
+                    dc.DrawLine(edge, P(6, 26), P(26, 26));
                 }
                 else
                 {

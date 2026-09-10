@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AutoCAD 자동 로드 매니페스트.
+     RailPluginSetup.exe 가 이 파일을 %APPDATA%\Autodesk\ApplicationPlugins\RailPlugin.bundle\ 에 풀어놓는다.
+     LoadOnAutoCADStartup="True" 라 AutoCAD 시작 시 자동 로드된다(NETLOAD 불필요).
+     ProductCode 는 같은 제품이므로 절대 바꾸지 말 것 (바꾸면 중복 등록으로 인식된다). -->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AutodeskProduct="AutoCAD"
+    Name="RailPlugin"
+    Description="레일 생성기 (DRAWRAILV, RAILW, RAILPART, RAILLEN, CAD2MAP 변환기 실행)"
+    AppVersion="1.2.0"
+    FriendlyVersion="1.2.0"
+    ProductType="Application"
+    ProductCode="{7A3C1E20-9B4D-4F6A-AE12-0B1C2D3E4F50}"
+    Author="LSL">
+  <CompanyDetails Name="LSL" />
+  <Components Description="AutoCAD x64">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" />
+    <ComponentEntry AppName="RailPlugin" Version="1.2.0"
+        ModuleName="./Contents/RailPlugin.dll"
+        LoadOnAutoCADStartup="True" />
+  </Components>
+</ApplicationPackage>

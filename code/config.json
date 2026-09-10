@@ -1,6 +1,6 @@
 {
   "io": {
-    "dxf_path": "../Testbed Layout 260410.dxf",
+    "dxf_path": "C:/Users/User/Desktop/test/0710_Site A.dxf",
     "direction": "CCW"
   },
   "io_comments": {
@@ -8,7 +8,7 @@
     "direction": "AGV 주행 방향. CCW(반시계) 또는 CW(시계)"
   },
   "tolerance": {
-    "snap_tol": 200.0,
+    "snap_tol": 100.0,
     "inter_merge_tol": 100.0,
     "clean_tol": 110.0,
     "snap_decimals": 6,
@@ -24,11 +24,15 @@
   "branch_detection": {
     "n_branch_min_arc_sweep_deg": 10.0,
     "n_branch_diagonal_axis_tol_deg": 5.0,
+    "rail_arc_radius_mm": 480.0,
+    "rail_arc_radius_tol_mm": 5.0,
     "scale_to_mm": 1.0
   },
   "branch_detection_comments": {
     "n_branch_min_arc_sweep_deg": "N분기로 인정할 호의 최소 스윕각 (도)",
     "n_branch_diagonal_axis_tol_deg": "N분기 중간 직선의 대각선 판별 기준 (도)",
+    "rail_arc_radius_mm": "표준 호 반지름 R (mm). 직-호-직 U 인식과 ori U 폭 게이트(2R+50)의 단일 원천. 구 도면(450)을 변환할 땐 450으로",
+    "rail_arc_radius_tol_mm": "반지름 일치 허용 오차 (mm)",
     "scale_to_mm": "도면 단위 → mm 변환 배율"
   },
   "clearance_nodes": {
@@ -54,7 +58,7 @@
     "u_j1": "U분기 J1 거리 (mm)",
     "small_x_j1": "소형 복합분기 J1 (mm)",
     "complex_lr_j1": "복합분기 J1 (mm)",
-    "complex_lr_point_a_x": "복합분기 Point A 기준 X (mm)",
+    "complex_lr_point_a_x": "복합분기 Point A 기준 X (mm). node.pptx 규칙 1800 에서 측정여유 5 를 뺀 값 — 이 값 **이상**이면 생성(상한 없음)",
     "complex_lr_point_b2_x": "복합분기 Point B2 기준 X (mm)"
   },
   "driving_nodes": {
@@ -66,8 +70,9 @@
     "min_segment": "주행 노드 최소 구간 길이 (mm)"
   },
   "color_filter": {
-    "rail_color": 250,
+    "rail_color": null,
     "port_colors": [],
-    "rail_layers": []
+    "rail_layers": [],
+    "port_layers": []
   }
 }

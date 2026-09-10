@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- RailPlugin(AutoCAD) 설치 프로그램 — DLL + 부품 DXF + 번들 매니페스트를 내장한 단일 exe.
+       설치기 자체는 net48 (윈도 기본 제공 → 받는 쪽에 런타임 설치가 필요 없다).
+       내장하는 플러그인 DLL 은 net8.0-windows 지만 여기서는 그냥 바이트 뭉치라 상관없다. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>              <!-- 콘솔창 없이 — 결과는 메시지 상자로 -->
+    <TargetFramework>net48</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RailPluginSetup</AssemblyName>
+    <RootNamespace>RailPluginSetup</RootNamespace>
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="Microsoft.CSharp" />     <!-- dynamic (COM 자동화)용 -->
+  </ItemGroup>
+
+  <!-- 본체(RailPlugin)는 build_installer.ps1 이 먼저 빌드한다.
+       ProjectReference 로 걸지 않는 이유: 본체는 net8.0-windows 라 net48 설치기가 참조할 수 없다. -->
+
+  <!-- 배포물 내장: 플러그인 DLL + 부품 블록 DXF + 자동 로드 매니페스트 -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\bin\x64\Release\RailPlugin.dll">
+      <LogicalName>RailPlugin.dll</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\zwcad_lm\dist\분기 레일 형상 세트 정리 (레이아웃 설계) v0_260721.dxf">
+      <LogicalName>parts.dxf</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="PackageContents.xml">
+      <LogicalName>PackageContents.xml</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <!-- CAD→MAP 변환기(PyInstaller 단일 exe) + 기본 설정. 리본 'CAD→MAP' 버튼이 DLL 옆에서 찾는다.
+         변환기 재빌드: code\ 에서  python -m PyInstaller DXFtoMAP.spec -y  → code\dist\DXFtoMAP.exe -->
+    <EmbeddedResource Include="..\..\dist\DXFtoMAP.exe">
+      <LogicalName>DXFtoMAP.exe</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\dist\config.json">
+      <LogicalName>config.json</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="CheckPayload" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\bin\x64\Release\RailPlugin.dll')"
+           Text="RailPlugin.dll 이 없습니다. 본체를 먼저 빌드하세요: dotnet build ..\RailPlugin.csproj -c Release -p:Platform=x64" />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\..\dist\DXFtoMAP.exe')"
+           Text="DXFtoMAP.exe 가 없습니다. 변환기를 먼저 빌드하세요: code\ 에서 python -m PyInstaller DXFtoMAP.spec --noconfirm" />
+  </Target>
+</Project>

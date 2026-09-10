@@ -600,7 +600,7 @@ def find_line_arc_line_u_branch_groups(
     tol: float,
     *,
     scale_to_mm: float = 1.0,
-    radius_target_mm: float = 450.0,
+    radius_target_mm: float = 480.0,
     radius_tol_mm: float = 5.0,
     abs_sa_ea_tol_deg: float = 5.0,
 ) -> List[Tuple[Tuple[int, int, int], str]]:
@@ -904,7 +904,7 @@ def export_map_from_unified_edges(
     n_branch_diagonal_axis_tol_deg: float = 5.0,
     u_branch_arc_sum_target_mm: float = 4000.0,
     u_x_threshold_mm: Optional[float] = None,
-    line_arc_line_u_radius_mm: float = 450.0,
+    line_arc_line_u_radius_mm: float = 480.0,
     line_arc_line_u_radius_tol_mm: float = 5.0,
     line_arc_line_u_abs_sa_ea_tol_deg: float = 5.0,
     emit_line_arc_line_u_links: bool = True,
@@ -924,7 +924,7 @@ def export_map_from_unified_edges(
     - 좌표: 도면 단위에 scale_to_mm(기본 1)을 곱한 뒤 **소수점 6자리**로 기록.
     - LINK: U/N 패턴은 **한 줄**로 합침 — 첫 호의 start ~ 마지막 호의 end, Type U/N, 길이는 구간 합.
       U는 호-호는 두 호 **반지름 합**, 호-직-호(호 두 개)는 **반지름 합+중간 직선**이 target±tol.
-      직선–호–직선(반원·450mm 등)은 병합하지 않음. 기본(`emit_line_arc_line_u_links=True`)이면
+      직선–호–직선(반원·480mm 등)은 병합하지 않음. 기본(`emit_line_arc_line_u_links=True`)이면
       **가운데 호(ARC)만** Type U. 끄면 S/L·R.
       U(호-직-호, 호 두 개)만 중간 직선 길이 상한 사용. N은 직선 길이 무관, 두 호 스윕 각·중간 직선이 대각선.
       그 외는 직선 S / 호 L·R.

@@ -71,6 +71,38 @@ def scan_entity_layers(doc) -> Dict[str, int]:
     return counts
 
 
+def scan_colors_and_layers(doc, progress=None) -> Tuple[Dict[int, int], Dict[str, int]]:
+    """색상·레이어를 한 번의 순회로 동시 집계 (scan_entity_colors+scan_entity_layers 합본).
+    progress(done, total) 콜백을 ~1%마다 호출 → determinate 진행바용. 반환: (color_counts, layer_counts)."""
+    color_counts: Dict[int, int] = {}
+    layer_counts: Dict[str, int] = {}
+
+    def _count(ent, parent_color: Optional[int] = None):
+        c = parent_color if parent_color is not None else _resolve_color(ent, doc)
+        et = ent.dxftype()
+        if et in ("LINE", "ARC", "LWPOLYLINE", "CIRCLE"):
+            color_counts[c] = color_counts.get(c, 0) + 1
+            layer = str(getattr(ent.dxf, "layer", "0"))
+            layer_counts[layer] = layer_counts.get(layer, 0) + 1
+        elif et == "POLYLINE":
+            from ezdxf.render.polyline import virtual_polyline_entities
+            for ve in virtual_polyline_entities(ent):
+                _count(ve, parent_color=c)
+
+    entities = list(doc.modelspace())
+    total = len(entities)
+    step = max(1, total // 100)   # 진행 콜백 ~100회로 제한
+    for i, e in enumerate(entities):
+        if e.dxftype() == "INSERT":
+            for ve in iter_insert_virtual_entities(e):
+                _count(ve)
+        else:
+            _count(e)
+        if progress and (i % step == 0 or i == total - 1):
+            progress(i + 1, total)
+    return color_counts, layer_counts
+
+
 def collect_entities_recursive(
     doc,
     rail_color: Optional[int] = None,

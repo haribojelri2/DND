@@ -1,6 +1,6 @@
 """분기 템플릿 생성기.
 
-각 분기 타입(U-tight / U-wide / N / 복합)을 도면 표준 지오메트리(호 반지름 450 등,
+각 분기 타입(U-tight / U-wide / N / 복합)을 도면 표준 지오메트리(호 반지름 480 등,
 test_logic 파이프라인에서 측정)로 그린다. 결과는 원시 프리미티브 리스트:
   ("LINE", (x1,y1), (x2,y2))
   ("ARC",  (cx,cy), r, start_deg, end_deg)   # ezdxf 기준 CCW
@@ -12,7 +12,7 @@ import math
 from typing import List, Tuple, Any
 
 Primitive = Tuple
-STD_R = 450.0          # 표준 호 반지름
+STD_R = 480.0          # 표준 호 반지름 (config branch_detection.rail_arc_radius_mm 와 동일 기준)
 STD_STUB = 700.0       # 레일 스텁 길이(표준: 복합분기 레일 700)
 
 
@@ -32,7 +32,7 @@ def u_tight(r: float = STD_R, stub: float = STD_STUB) -> List[Primitive]:
     ]
 
 
-def u_wide(r: float = STD_R, mid: float = 450.0, stub: float = STD_STUB) -> List[Primitive]:
+def u_wide(r: float = STD_R, mid: float = STD_R, stub: float = STD_STUB) -> List[Primitive]:
     """wide U턴(호-직-호): 90°호 + 세로직선(mid) + 90°호. 폭 = 2r+mid."""
     h = 2 * r + mid
     return [
@@ -68,13 +68,13 @@ def n_branch(r: float = STD_R, h: float = 650.0, stub: float = STD_STUB) -> List
     ]
 
 
-def complex_branch(r: float = STD_R, gap: float = 1350.0,
+def complex_branch(r: float = STD_R, gap: float = 3.0 * STD_R,
                    railseg: float = STD_STUB) -> List[Primitive]:
     """복합분기(측정 표준 구조): 두 평행 수평레일(간격 gap, 길이 railseg) +
     오른쪽 끝의 안쪽 U(호-직-호) + 왼쪽 끝에서 바깥 호 2개→세로 through-line(길이 gap+2r).
     좌표: 안쪽 U junction=원점(0,0)/(0,-gap), 레일은 -x로 railseg, through-line은 x=-(railseg+r)."""
     top, bot = 0.0, -gap
-    im = gap - 2 * r                                  # 안쪽 U 세로직선 길이(=450)
+    im = gap - 2 * r                                  # 안쪽 U 세로직선 길이(gap=3R 이면 R)
     tx = -(railseg + r)                               # through-line x 위치
     prim: List[Primitive] = []
     # 수평 레일 (오른쪽 안쪽U junction → 왼쪽 바깥 junction)

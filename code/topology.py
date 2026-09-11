@@ -1099,7 +1099,8 @@ def insert_clearance_nodes(unified_edges, tol=1.0, *, n_arc_indices=None, u_arc_
                         for k, third_e in in_edges.get(v_mid, []):
                             if k in _u_covered or k == i or k == j:
                                 continue
-                            if third_e.edge_type == "ARC":
+                            # 직선 끝으로 '들어오는' 호: 두 호가 직선의 같은 쪽으로 굽어야 U(반대쪽이면 합류 호)
+                            if third_e.edge_type == "ARC" and arcs_bend_same_side(arc, third_e, next_e):
                                 X = dist(arc.start, third_e.start)
                                 if X < U_X_THRESHOLD:
                                     _u_pairs.append((i, j, k))

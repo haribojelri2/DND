@@ -73,6 +73,18 @@ def ccw_delta_deg(a, b):
     """a에서 b까지 반시계 각도차 (0~360)."""
     return (b - a) % 360.0
 
+def arcs_bend_same_side(arc_a, arc_b, line) -> bool:
+    """호-직-호에서 두 호의 중심이 가운데 직선의 같은 쪽에 있는가.
+    U(180° 되돌아감)는 두 호가 같은 쪽(안쪽)으로 굽는다. 반대쪽이면 U 가 아니다 —
+    직선 끝으로 합류하는 호를 거꾸로 짝지은 경우(뒤집으면 합류 경로가 끊김)나 S자."""
+    (x0, y0), (x1, y1) = line.start, line.end
+    dx, dy = x1 - x0, y1 - y0
+
+    def side(arc):
+        return dx * (arc._data.cy - y0) - dy * (arc._data.cx - x0)
+
+    return side(arc_a) * side(arc_b) > 0
+
 def grid_key(p: Tuple[float, float], cell: float) -> Tuple[int, int]:
     """공간 해싱용 정수 셀 인덱스 (geometry 내부 버킷 탐색용)."""
     if cell <= 0:

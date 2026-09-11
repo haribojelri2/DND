@@ -873,6 +873,10 @@ def find_un_branch_merge_groups_by_x(
             branch = un_branch_type_from_arcs(edge, third_e, not bool(third_flip))
             if branch == "U":
                 if third_flip:
+                    # 셋째 호가 직선 끝으로 '들어오는' 방향 — 두 호가 직선의 반대쪽으로 굽으면 U 가 아니라
+                    # 합류 호다. 뒤집으면 그 호로 들어오던 경로가 끊기므로 짝짓지 않는다.
+                    if not arcs_bend_same_side(edge, third_e, next_e):
+                        continue
                     third_e.reverse()
                 far_end = third_e.end
                 X = dist(edge.start, far_end) * float(scale_to_mm)

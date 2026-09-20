@@ -221,7 +221,7 @@ def _chain_partner(g: Graph, i: int, ang_tol: float) -> List[Tuple[int, Optional
     return out
 
 
-def find_candidates(g: Graph, tol: float, ang_tol: float) -> List[Cand]:
+def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> List[Cand]:
     segs = g.segs
     cands: List[Cand] = []
     taken: set = set()
@@ -249,8 +249,8 @@ def find_candidates(g: Graph, tol: float, ang_tol: float) -> List[Cand]:
                 # 아치: 두 접합점을 잇는 선은 레일과 직각, 아치는 레일 방향 쪽에 있다
                 u = unit(mul(ua, 1.0))     # 접합점에서 호 쪽(= 아치 쪽) 이 로컬 +Y
                 w = dist(Ja, Jb)
-                if abs(dot(chord, u)) > tol:
-                    continue
+                if abs(dot(chord, u)) > tol or w > max_w:
+                    continue               # 너무 넓으면 되돌림 모듈이 아니라 곡선·분기 두 개로 본다
                 left_first = cross(u, chord) > 0       # Ja 기준 Jb 가 왼쪽이면 Ja 가 로컬 x=w
                 J0, J1 = (Jb, Ja) if left_first else (Ja, Jb)   # J0 = 로컬 x=0 (u 기준 왼쪽)
                 d0, d1 = g.deg(J0), g.deg(J1)
@@ -282,6 +282,8 @@ def find_candidates(g: Graph, tol: float, ang_tol: float) -> List[Cand]:
                         low, high = high, low
                 chord2 = sub(high, low)
                 w = abs(cross(u_lane, chord2))
+                if w > max_w:
+                    continue
                 left = cross(u_lane, chord2) > 0       # 이동이 진행 방향 왼쪽
                 name = f"{kind} {'LEFT' if left else 'RIGHT'}"
                 anchor = (lambda p: (p["w"], p["l"])) if left else (lambda p: (0.0, p["l"]))
@@ -297,7 +299,9 @@ def find_candidates(g: Graph, tol: float, ang_tol: float) -> List[Cand]:
             continue
         if abs(abs(s.sweep) - 90.0) > ang_tol:
             continue
-        for J, B in ((s.p0, s.p1), (s.p1, s.p0)):
+        ends = [(s.p0, s.p1), (s.p1, s.p0)]
+        ends.sort(key=lambda e: -g.deg(e[0]))       # 갈림점(3갈래) 쪽을 먼저 본다 → BRANCH 우선
+        for J, B in ends:
             if g.deg(J) < 2:
                 continue
             lane = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]
@@ -415,16 +419,21 @@ def fit(cand: Cand, segs: List[Seg], tol: float, L_list=L_CANDIDATES):
 
 
 # ── 본체 ────────────────────────────────────────────────────────────────────
-def convert(in_path: str, out_path: str, layers, tol: float, l_max: float, log=print) -> Dict[str, Any]:
+def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
+            module_color: int = 0, plain_color: int = 0, module_layer: str = "",
+            max_w: float = 4000.0, log=print) -> Dict[str, Any]:
     doc = ezdxf.readfile(in_path)
     segs = read_segments(doc, layers)
     if not segs:
         raise SystemExit("선·호를 찾지 못했습니다 (레이어 지정을 확인하세요)")
     g = Graph(segs, tol)
-    cands = find_candidates(g, tol, ang_tol=1.0)
+    cands = find_candidates(g, tol, ang_tol=1.0, max_w=max_w)
 
     l_list = tuple(x for x in L_CANDIDATES if x <= l_max) or (l_max,)
     lay = Lay()
+    if module_layer:
+        # 모듈 블록 안의 선·호는 레이어 0 이라 삽입 레이어의 색을 따라간다
+        lay.doc.layers.add(module_layer, color=module_color or 3)
     placed, skipped = [], []
     for cd in cands:
         res = fit(cd, segs, tol, l_list)
@@ -440,11 +449,16 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float, log=p
         anc = cd.anchor({"r": r, "l": l, "w": w, "a": a,
                          "h": mj.cross_rise(r, w, a) if mj.DEFS[idx][2] else 0.0})
         lay.place(cd.name, anc, cd.at, cd.heading, False, R=r, L=l, W=w, A=a)
-        ref = list(lay.msp)[-1]                      # 모듈은 원래 선과 같은 레이어에 둔다
-        ref.dxf.layer = segs[cd.segs[0]].layer
+        ref = list(lay.msp)[-1]
+        ref.dxf.layer = module_layer or segs[cd.segs[0]].layer   # 모듈 레이어(색) 또는 원래 레이어
+        if module_color:
+            ref.dxf.color = module_color
         placed.append((cd.name, r, l, w, a, cd.at))
 
     # 모듈이 덮지 않은 부분만 남긴다
+    plain_attr = {"layer": "RAIL"}
+    if plain_color:
+        plain_attr["color"] = plain_color
     left_lines = left_arcs = 0
     for s in segs:
         if s.kind == "ARC":
@@ -452,7 +466,7 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float, log=p
                 a0, a1 = ang(s.c, s.p0), ang(s.c, s.p1)
                 if s.sweep < 0:
                     a0, a1 = a1, a0
-                lay.msp.add_arc(s.c, s.r, a0, a1, dxfattribs={"layer": "RAIL"})
+                lay.msp.add_arc(s.c, s.r, a0, a1, dxfattribs=plain_attr)
                 left_arcs += 1
             continue
         d, L = s.dir(), s.length
@@ -466,7 +480,7 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float, log=p
         t = 0.0
         for lo, hi in merged + [[L, L]]:
             if lo - t > tol:
-                lay.line(add(s.p0, mul(d, t)), add(s.p0, mul(d, lo)))
+                lay.msp.add_line(add(s.p0, mul(d, t)), add(s.p0, mul(d, lo)), dxfattribs=plain_attr)
                 left_lines += 1
             t = max(t, hi)
 
@@ -482,10 +496,17 @@ def main(argv=None) -> int:
     ap.add_argument("--layer", default="", help="레일 레이어(쉼표로 여러 개). 비우면 전부")
     ap.add_argument("--tol", type=float, default=8.0, help="형상 대조 허용 오차 mm")
     ap.add_argument("--L", type=float, default=200.0, help="모듈 다리 길이 최대값 mm")
+    ap.add_argument("--module-color", type=int, default=0, help="모듈 색 번호(1빨강 2노랑 3초록 4하늘 5파랑 6분홍 7흰색)")
+    ap.add_argument("--plain-color", type=int, default=0, help="모듈 아닌 선·호 색 번호")
+    ap.add_argument("--module-layer", default="", help="모듈을 놓을 레이어 이름(색을 주려면 지정)")
+    ap.add_argument("--max-w", type=float, default=4000.0,
+                    help="되돌림·차선이동 모듈로 볼 최대 폭 mm (넘으면 곡선·분기 모듈로 따로 처리)")
     a = ap.parse_args(argv)
     out = a.output or (a.input.rsplit(".", 1)[0] + "_modules.dxf")
     layers = [s.strip() for s in a.layer.split(",") if s.strip()] or None
-    res = convert(a.input, out, layers, a.tol, a.L)
+    res = convert(a.input, out, layers, a.tol, a.L,
+                  module_color=a.module_color, plain_color=a.plain_color, module_layer=a.module_layer,
+                  max_w=a.max_w)
 
     import collections
     cnt = collections.Counter(m[0] for m in res["modules"])

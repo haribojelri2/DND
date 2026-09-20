@@ -79,6 +79,18 @@ colour/layer rail filter. Outputs `<stem>_modules.csv` (per-module type, R/L/W/A
 Regression rule: a drawing without modules must give byte-identical maps to the geometric path (260410: ori `2e605d35…`,
 final `6792d1a5…`). Synthetic test drawings: `python module_testdxf.py <out_dir>`.
 
+### Module substitution (cad_to_modules.py) — CAD → CAD
+
+`python cad_to_modules.py <in.dxf> [out.dxf] [--layer RAIL] [--tol 8] [--L 200]` rewrites a plain LINE/ARC drawing into
+one built from plugin basic modules (`RAILMOD_` blocks + `RAILPLUGIN` XData), keeping the geometry identical.
+Patterns matched against `module_judge.build_local` (same shapes the plugin draws): arc-(line)-arc turning back 180°
+→ arch (DOUBLE BRANCH / U BRANCH / U by how many legs continue), arc-(line)-arc with opposite turns → lane change
+(N / BY PASS / S), single 90° arc at a 3-way node → BRANCH, at a 2-way node → CURVE. Chains must be tangent-continuous
+(`turn_sign` uses the traversal direction, not the stored arc order). `L` (leg length) is reduced until every module
+piece is covered by drawing geometry; a module that still doesn't fit is skipped with a warning. Anything not covered
+stays as LINE/ARC. Verified on `ori_Drawing1_fromMap.dxf`: 14 modules, total line/arc length unchanged (233,753 /
+17,223 mm), and the converter then judges it from module info with the same map topology as the geometric path.
+
 ### Module Responsibilities
 
 - **core.py** — Data classes (`LineSeg`, `ArcSeg`, `Edge`, `MapNode`, `MapLink`) and math utilities.

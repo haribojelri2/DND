@@ -307,18 +307,11 @@ def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0)
             lane = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]
             if not lane:
                 continue
-            u = unit(sub(B, J))
-            # 레일 방향: 접합점에 붙은 직선 중 호가 앞쪽이 되는 방향
-            lane_dirs = [segs[k].tangent_at(J) for k in lane]
-            best = max(lane_dirs, key=lambda d: dot(d, u))
-            u_lane = mul(best, -1.0) if dot(best, u) < 0 else best
-            # CURVE 는 호 뒤로 레일이 이어지지 않는다(차수 2), BRANCH 는 이어진다(차수 3)
+            # 레일 방향 = 호가 접합점에서 뻗는 방향(호는 레일에 접한다). 붙은 직선은 조금 기울어 있을 수 있어 쓰지 않는다.
+            u_lane = s.tangent_at(J)
             name_side = "LEFT" if cross(u_lane, sub(B, J)) > 0 else "RIGHT"
+            # CURVE 는 호 뒤로 레일이 이어지지 않는다(차수 2), BRANCH 는 이어진다(차수 3)
             base = "BRANCH" if g.deg(J) >= 3 else "CURVE"
-            if base == "CURVE":
-                # 코너: 레일이 접합점에서 꺾인다 → 들어오는 직선 방향이 로컬 +Y
-                u_lane = mul(segs[lane[0]].tangent_at(J), -1.0)
-                name_side = "LEFT" if cross(u_lane, sub(B, J)) > 0 else "RIGHT"
             name = f"{base} {name_side}"
             cands.append(Cand(name, J, lambda p: (0.0, p["l"]),
                               math.degrees(math.atan2(u_lane[1], u_lane[0])),

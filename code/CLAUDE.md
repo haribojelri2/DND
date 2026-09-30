@@ -79,6 +79,20 @@ colour/layer rail filter. Outputs `<stem>_modules.csv` (per-module type, R/L/W/A
 Regression rule: a drawing without modules must give byte-identical maps to the geometric path (260410: ori `2e605d35…`,
 final `6792d1a5…`). Synthetic test drawings: `python module_testdxf.py <out_dir>`.
 
+### MODULE FORMAT output (module_map.py) — single MAP for module drawings
+
+Spec: `LayoutEditorApp/LayoutEditorApp/NODE_모듈정보_기재가이드.md` + `MODULE FORMAT 제안서.pptx`. When modules are present
+and `config module_map.enabled` (default true), `gui.run_pipeline` writes **one** `<stem>.map` (no `ori_`): NODE lines in
+the extended format `…/OPSID/OPSOffset/ModuleID/SlotID/Param`, LINKs, then `MODULE/ID/Type/Angle/X/Y/slot…` lines and one
+`MODULEPARAM/R/L/W1/W2/A/M1/M2`. Module nodes = spec slot point + outward M1 (M2 for the through-top slots: BL/BR/UBL/UBR ③,
+DB ③④); links run slot-to-slot (inside modules: S / 90° L·R / arch U / cross N; between modules: S of `g − margins`). Facing
+slots closer than the two margins drop both nodes and join the two 90° curves with one U/N link (only C①②, Y②③, BL②, BR②;
+other overlaps warn). Decisions (2026-09-30): slot geometry follows the **spec** (branch through-top arm = L+180 =
+`through_extra_mm`, plugin blocks are 180 shorter), U-family width is W (W1/W2), Angle is **clockwise** (guide example 3).
+Plugin modules are matched to spec types by free-end positions + outward directions + path probes on the block (DB is
+rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/LINK/MODULE lines exactly
+(`tmp guide_examples.py`); drawings without modules and `enabled=false` are byte-identical to before.
+
 ### Module substitution (cad_to_modules.py) — CAD → CAD
 
 `python cad_to_modules.py <in.dxf> [out.dxf] [--layer RAIL] [--tol 8] [--L 200]` rewrites a plain LINE/ARC drawing into

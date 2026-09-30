@@ -66,6 +66,22 @@ class MapNode:
     pio_device_id: str = ""
     param_disabled: str = ""
     param_yield_enabled: str = "0"
+    # MODULE FORMAT(LayoutEditor) 확장 필드 — node_format="v2" 로 저장할 때만 쓴다
+    lift_tag_id: str = ""
+    zone_id: str = ""
+    ops_id: str = ""
+    ops_offset: str = ""
+    module_id: str = ""
+    slot_id: str = ""
+
+
+def format_node_line_v2(n: MapNode) -> str:
+    """MODULE FORMAT NODE: ID/Type/Reality/X/Y/ParentLinkID/RelativeDistance/LayerID/PIODeviceID/
+    LiftTagID/ZoneID/OPSID/OPSOffset/ModuleID/SlotID/Param (가이드 예시 NODE/000001/G/R/-1800.0/1600.0//0/0//////000001/1/)"""
+    g = lambda k, d="": str(getattr(n, k, d) or d)
+    return "/".join(["NODE", n.id, n.type, n.reality, str(n.x), str(n.y), g("parent_link_id"),
+                     g("relative_distance", "0"), g("layer_id", "0"), g("pio_device_id"), g("lift_tag_id"),
+                     g("zone_id"), g("ops_id"), g("ops_offset"), g("module_id"), g("slot_id"), ""])
 
 
 def format_node_line(n: MapNode) -> str:
@@ -153,14 +169,19 @@ def save_map(
     links: List[MapLink],
     header: Optional[str] = None,
     ports: Optional[List[Any]] = None,
+    node_format: str = "v1",
+    extra_lines: Optional[List[str]] = None,
 ) -> None:
     lines: List[str] = []
     if header:
         lines.append(header.rstrip() + "\n")
+    fmt = format_node_line_v2 if node_format == "v2" else format_node_line
     for n in nodes:
-        lines.append(format_node_line(n) + "\n")
+        lines.append(fmt(n) + "\n")
     for lk in links:
         lines.append(format_link_line(lk) + "\n")
+    for s in extra_lines or []:
+        lines.append(s.rstrip("\n") + "\n")
     if ports:
         # 순환참조 방지를 위해 로컬 import
         from port_extractor import format_port_line

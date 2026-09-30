@@ -92,5 +92,19 @@
     "port_colors": [],
     "rail_layers": [],
     "port_layers": []
+  },
+  "module_map": {
+    "enabled": true,
+    "margin_m1": 150.0,
+    "margin_m2": 520.0,
+    "through_extra_mm": 180.0,
+    "slot_tol_mm": 5.0
+  },
+  "module_map_comments": {
+    "enabled": "모듈이 있는 도면을 MODULE FORMAT(LayoutEditor) MAP 하나로 출력. false 면 기존 방식(원본+이격 MAP 두 개)",
+    "margin_m1": "M1: 슬롯 CAD 끝점에서 바깥으로 이격하는 거리(mm)",
+    "margin_m2": "M2: 분기류 관통 위쪽 슬롯(BL·BR·UBL·UBR ③, DB ③④)의 이격 거리(mm)",
+    "through_extra_mm": "제안서 분기류 관통 위쪽 팔 = L + 이 값(플러그인 블록보다 긴 만큼)",
+    "slot_tol_mm": "모듈 슬롯 위치 대조 허용 오차(mm)"
   }
 }

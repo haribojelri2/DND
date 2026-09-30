@@ -21,6 +21,7 @@ from part_counter import (count_parts, count_geometry, save_parts_csv,
                           summary_text, table_lines)
 from map_to_cad import map_to_dxf
 from module_judge import ModuleJudge, decide_modules
+import module_map
 # 최종 맵 역변환(final_to_cad)은 형상 복원 방식이 달라 GUI 에서 뺐다 — CLI 로만 사용
 
 
@@ -110,6 +111,28 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     if _modules is not None:
         mjudge = ModuleJudge(_modules, cfg, tol=INTER_MERGE_TOL)
         mjudge.bind(unified_edges)      # 모듈 ↔ 엣지 대응(위치 대조). 이후 단계는 같은 엣지 객체를 따라간다
+
+    if mjudge is not None and module_map.enabled(cfg):
+        # MODULE FORMAT: 이격 기준 MAP 하나 (ModuleID/SlotID·MODULE·MODULEPARAM 포함, 원본 MAP 없음)
+        log("MODULE FORMAT MAP 만드는 중... (모듈 슬롯 + M1/M2 이격)")
+        mjudge.clearance_inputs(unified_edges)          # 모듈 CSV 의 판정 칸 채우기(보고용)
+        if DIRECTION.upper() == "CW":
+            for e in unified_edges:
+                e.reverse()
+        res = module_map.build(_modules, unified_edges, cfg, log)
+        nodes, links = res.nodes, res.links
+        _extra = _dedup_port_nodes(
+            collect_port_nodes_by_color(doc, port_colors or [])
+            + collect_port_nodes_by_layer(doc, port_layers or []))
+        stb_ports, new_t_nodes, _ = extract_stb_ports(doc, nodes, links, next_node_id=len(nodes) + 1,
+                                                       extra_port_nodes=_extra)
+        nodes.extend(new_t_nodes)
+        save_map(str(MAP_OUT), nodes, links, header="#LSL - Jcolab", ports=stb_ports,
+                 node_format="v2", extra_lines=module_map.module_lines(res))
+        log(f"모듈 {len(res.modules)}개 → MODULE 레코드, MODULEPARAM "
+            + "/".join(f"{v:g}" for v in res.param))
+        _report_tail(doc, DXF_PATH, mjudge, nodes, links, stb_ports, MAP_OUT, log)
+        return
 
     log("원본 맵 내보내는 중...")
     if DIRECTION.upper() == "CW":
@@ -237,7 +260,11 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     if _self_loops:
         log(f"[주의] 시작·끝 노드가 같은 링크 {_self_loops}개 - 대기 노드 두 개가 "
             f"{INTER_MERGE_TOL:.0f}mm 안에 겹침(분기·곡선 사이 직선이 짧음)")
+    _report_tail(doc, DXF_PATH, mjudge, nodes, links, stb_ports, MAP_OUT, log)
 
+
+def _report_tail(doc, DXF_PATH, mjudge, nodes, links, stb_ports, MAP_OUT, log):
+    """부품 수량·모듈 판정 보고와 마지막 로그 — 두 출력 방식(기존 / MODULE FORMAT) 공용."""
     # 정형화 부품 수량 집계 (플러그인으로 작도한 도면일 때만 산출)
     #  ※ 부가 산출물이므로 여기서 실패해도 map 변환 결과는 그대로 살린다.
     try:

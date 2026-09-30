@@ -89,6 +89,14 @@ if _modules is not None:
     mjudge = ModuleJudge(_modules, _cfg, tol=INTER_MERGE_TOL)
     mjudge.bind(unified_edges)      # 모듈 ↔ 엣지 대응(위치 대조). 이후 단계는 같은 엣지 객체를 따라간다
 
+import module_map
+if mjudge is not None and module_map.enabled(_cfg):
+    # MODULE FORMAT(이격 기준 MAP 하나) — gui.run_pipeline 과 같은 경로를 그대로 쓴다
+    import gui
+    gui.run_pipeline(str(DXF_PATH), _cfg, print, rail_color=RAIL_COLOR, port_colors=PORT_COLORS,
+                     rail_layers=RAIL_LAYERS, port_layers=_cf.get("port_layers") or None)
+    sys.exit(0)
+
 # ---------------------------------------------------------
 # 대기 노드 적용 전 원본 저장 (CW이면 반전 후 저장, 탐지를 위해 복원)
 

@@ -156,7 +156,17 @@ class Graph:
         return self.nodes.get(self.key(p), [])
 
     def deg(self, p: Pt) -> int:
-        return len(self.at(p))
+        """p 에 모이는 가지 수. 끝점뿐 아니라 p 를 끊기지 않고 지나가는 직선도 두 가지로 센다
+        (차선 이동 호가 옆 레일의 중간에 닿는 도면 — 이걸 빼면 N 을 BY PASS/S 로 잘못 고른다)."""
+        n = len(self.at(p))
+        for s in self.segs:
+            if s.kind != "LINE":
+                continue
+            d = s.dir()
+            t = dot(sub(p, s.p0), d)
+            if self.tol < t < s.length - self.tol and abs(cross(d, sub(p, s.p0))) <= self.tol:
+                n += 2
+        return n
 
     def others(self, p: Pt, exclude: Sequence[int]) -> List[int]:
         return [i for i, _ in self.at(p) if i not in exclude]

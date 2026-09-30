@@ -235,26 +235,38 @@ def _chain_partner(g: Graph, i: int, ang_tol: float) -> List[Tuple[int, Optional
     return out
 
 
-def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0,
-                    stage: Optional[int] = None, pre_taken=(), accept=None, rejected=None) -> List[Cand]:
-    """stage 1 = 호-(직선)-호 모듈, 2 = 호 하나 모듈(BRANCH/CURVE), None = 둘 다. pre_taken = 이미 모듈이 된 세그먼트.
-    accept(cand) 가 이유(문자열)를 돌려주면 그 후보는 호를 차지하지 않고 버린다(rejected 에 기록) - 같은 호로 다른 짝을 계속 찾는다."""
+def single_ladder(g: Graph, i: int, ang_tol: float) -> Optional[List[Cand]]:
+    """90° 호 하나의 포함 사다리 [CURVE, BRANCH] (작은 것부터). 갈림점이 아니면 [CURVE] 만. 90° 가 아니면 None."""
     segs = g.segs
-    cands: List[Cand] = []
-    taken: set = set(pre_taken)
+    s = segs[i]
+    if s.kind != "ARC" or abs(abs(s.sweep) - 90.0) > ang_tol:
+        return None
+    ends = [(s.p0, s.p1), (s.p1, s.p0)]
+    ends.sort(key=lambda e: -g.deg(e[0]))       # 갈림점(3갈래) 쪽을 기준으로 본다
+    for J, B in ends:
+        if g.deg(J) < 2:
+            continue
+        if not [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]:
+            continue
+        # 레일 방향 = 호가 접합점에서 뻗는 방향(호는 레일에 접한다). 붙은 직선은 조금 기울어 있을 수 있어 쓰지 않는다.
+        u_lane = s.tangent_at(J)
+        side = "LEFT" if cross(u_lane, sub(B, J)) > 0 else "RIGHT"
+        head = math.degrees(math.atan2(u_lane[1], u_lane[0]))
+        mk = lambda base: Cand(f"{base} {side}", J, lambda p: (0.0, p["l"]), head, s.r, 900.0, 45.0, (i,))
+        return [mk("CURVE"), mk("BRANCH")] if g.deg(J) >= 3 else [mk("CURVE")]
+    return None
 
-    def claim(cd: Cand, used) -> bool:
-        why = accept(cd) if accept else ""
-        if why:
-            if rejected is not None:
-                rejected.append((cd, why))
-            return False
-        cands.append(cd)
-        taken.update(used)
-        return True
 
-    # 1) 호-(직선)-호
-    for i, a in enumerate(segs if stage != 2 else []):
+def find_groups(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> List[List[List[List[Cand]]]]:
+    """포함 사다리 목록. 사다리 = 단계(작은 것 → 큰 것) 목록, 단계 = 대안 목록, 대안 = 함께 놓을 모듈(Cand) 목록.
+      되돌림: CURVE → BRANCH → U BRANCH → DOUBLE BRANCH   (양쪽 다 끝나면 CURVE → U)
+      차선 이동: S → BY PASS → N
+      나머지 90° 호: CURVE → BRANCH"""
+    segs = g.segs
+    groups = []
+    taken: set = set()
+
+    for i, a in enumerate(segs):
         if a.kind != "ARC" or i in taken:
             continue
         for j, mid, Ja, Jb in _chain_partner(g, i, ang_tol):
@@ -263,91 +275,82 @@ def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0,
             b = segs[j]
             if abs(a.r - b.r) > tol:
                 continue
-            # 회전 방향은 '지나가는 방향' 기준 (Ja → a → … → b → Jb)
             turn_a = turn_sign(a, Ja)
             turn_b = -turn_sign(b, Jb)          # b 는 Jb 쪽으로 나가므로 반대에서 들어온다
             same_turn = turn_a == turn_b
             sw_a, sw_b = abs(a.sweep), abs(b.sweep)
-            ua = a.tangent_at(Ja)          # 접합점에서 호가 뻗는 방향
-            ub = b.tangent_at(Jb)
-            lane_a = unit(mul(ua, -1.0))   # 모듈 다리(레일)가 뻗는 방향의 반대 = 로컬 +Y 후보
+            ua = a.tangent_at(Ja)
             chord = sub(Jb, Ja)
+            used = tuple(x for x in (i, j, mid) if x is not None)
             if same_turn and abs(sw_a + sw_b - 180.0) <= ang_tol:
-                # 아치: 두 접합점을 잇는 선은 레일과 직각, 아치는 레일 방향 쪽에 있다
-                u = unit(mul(ua, 1.0))     # 접합점에서 호 쪽(= 아치 쪽) 이 로컬 +Y
+                u = unit(ua)                   # 접합점에서 호 쪽(= 아치 쪽) 이 로컬 +Y
                 w = dist(Ja, Jb)
                 if abs(dot(chord, u)) > tol or w > max_w:
-                    continue               # 너무 넓으면 되돌림 모듈이 아니라 곡선·분기 두 개로 본다
-                left_first = cross(u, chord) > 0       # Ja 기준 Jb 가 왼쪽이면 Ja 가 로컬 x=w
-                J0, J1 = (Jb, Ja) if left_first else (Ja, Jb)   # J0 = 로컬 x=0 (u 기준 왼쪽)
+                    continue
+                left_first = cross(u, chord) > 0
+                J0, J1 = (Jb, Ja) if left_first else (Ja, Jb)
                 d0, d1 = g.deg(J0), g.deg(J1)
-                if d0 >= 3 and d1 >= 3:
-                    name = "DOUBLE BRANCH"
-                elif d0 >= 3:
-                    name = "U BRANCH RIGHT"            # 관통 = 로컬 x=0
-                elif d1 >= 3:
-                    name = "U BRANCH LEFT"             # 관통 = 로컬 x=w
+                head = math.degrees(math.atan2(u[1], u[0]))
+                arch = lambda name: Cand(name, J0, lambda p: (0.0, p["l"]), head, a.r, w, 45.0, used)
+                la, lb = single_ladder(g, i, ang_tol), single_ladder(g, j, ang_tol)
+                ladder = []
+                if la and lb:
+                    ladder.append([[la[0], lb[0]]])                                  # CURVE
+                    if len(la) > 1 or len(lb) > 1:
+                        ladder.append([[la[-1], lb[-1]]])                            # BRANCH
+                if d0 >= 3 or d1 >= 3:
+                    alts = []
+                    if d0 >= 3:
+                        alts.append([arch("U BRANCH RIGHT")])                        # 관통 = 로컬 x=0
+                    if d1 >= 3:
+                        alts.append([arch("U BRANCH LEFT")])                         # 관통 = 로컬 x=w
+                    ladder.append(alts)                                              # U BRANCH
+                    if d0 >= 3 and d1 >= 3:
+                        ladder.append([[arch("DOUBLE BRANCH")]])                     # DOUBLE BRANCH
                 else:
-                    name = "U"
-                if claim(Cand(name, J0, lambda p: (0.0, p["l"]), math.degrees(math.atan2(u[1], u[0])),
-                              a.r, w, 45.0, tuple(x for x in (i, j, mid) if x is not None)),
-                         {i, j} | ({mid} if mid is not None else set())):
-                    break
-                continue
+                    ladder.append([[arch("U")]])                                     # U
+                groups.append(ladder)
+                taken.update(used)
+                break
             # 차선 이동(S자): 반대로 꺾이는 같은 각의 두 호. 90° 두 개(ㄱ·ㄴ 꺾임)는 S 가 아니다(A < 90)
             if (not same_turn) and abs(sw_a - sw_b) <= ang_tol and sw_a < 90.0 - ang_tol:
-                # 차선 이동: 진행 방향 = 접합점에서 호가 뻗는 방향. 아래 접합점(Ja) 이 로컬 높이 l.
-                u_lane = ua
-                low, high = Ja, Jb
-                d_low, d_high = g.deg(low), g.deg(high)
-                if d_low >= 3 and d_high >= 3:
-                    kind = "N"
-                elif d_low < 3 and d_high < 3:
-                    kind = "S"
-                else:
-                    kind = "BY PASS"
-                    if d_low >= 3:      # 끝나는 레일이 위쪽이면 반대 방향으로 놓는다
-                        u_lane = mul(u_lane, -1.0)
-                        low, high = high, low
-                chord2 = sub(high, low)
-                w = abs(cross(u_lane, chord2))
-                if w > max_w:
-                    continue
-                left = cross(u_lane, chord2) > 0       # 이동이 진행 방향 왼쪽
-                name = f"{kind} {'LEFT' if left else 'RIGHT'}"
-                anchor = (lambda p: (p["w"], p["l"])) if left else (lambda p: (0.0, p["l"]))
-                if claim(Cand(name, low, anchor,
-                              math.degrees(math.atan2(u_lane[1], u_lane[0])),
-                              a.r, w, sw_a, tuple(x for x in (i, j, mid) if x is not None)),
-                         {i, j} | ({mid} if mid is not None else set())):
-                    break
+                d_a, d_b = g.deg(Ja), g.deg(Jb)
 
-    # 2) 호 하나 — BRANCH / CURVE
-    for i, s in enumerate(segs if stage != 1 else []):
-        if s.kind != "ARC" or i in taken:
+                def lane(kind, low, high, u_lane):
+                    chord2 = sub(high, low)
+                    w = abs(cross(u_lane, chord2))
+                    left = cross(u_lane, chord2) > 0       # 이동이 진행 방향 왼쪽
+                    anchor = (lambda p: (p["w"], p["l"])) if left else (lambda p: (0.0, p["l"]))
+                    return Cand(f"{kind} {'LEFT' if left else 'RIGHT'}", low, anchor,
+                                math.degrees(math.atan2(u_lane[1], u_lane[0])), a.r, w, sw_a, used)
+
+                fwd = (Ja, Jb, ua)                           # 아래 접합점 Ja 가 로컬 높이 l
+                rev = (Jb, Ja, mul(ua, -1.0))
+                if abs(cross(ua, chord)) > max_w:
+                    continue
+                ladder = [[[lane("S", *fwd)]]]                                        # S
+                # BY PASS: 관통 레일은 위쪽(high) 접합점, 끝나는 레일은 아래쪽(low)
+                bp = []
+                if d_b >= 3:
+                    bp.append([lane("BY PASS", *fwd)])
+                if d_a >= 3:
+                    bp.append([lane("BY PASS", *rev)])
+                if bp:
+                    ladder.append(bp)                                                 # BY PASS
+                    if d_a >= 3 and d_b >= 3:
+                        ladder.append([[lane("N", *fwd)]])                            # N
+                groups.append(ladder)
+                taken.update(used)
+                break
+
+    for i, s in enumerate(segs):
+        if i in taken:
             continue
-        if abs(abs(s.sweep) - 90.0) > ang_tol:
-            continue
-        ends = [(s.p0, s.p1), (s.p1, s.p0)]
-        ends.sort(key=lambda e: -g.deg(e[0]))       # 갈림점(3갈래) 쪽을 먼저 본다 → BRANCH 우선
-        for J, B in ends:
-            if g.deg(J) < 2:
-                continue
-            lane = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]
-            if not lane:
-                continue
-            # 레일 방향 = 호가 접합점에서 뻗는 방향(호는 레일에 접한다). 붙은 직선은 조금 기울어 있을 수 있어 쓰지 않는다.
-            u_lane = s.tangent_at(J)
-            name_side = "LEFT" if cross(u_lane, sub(B, J)) > 0 else "RIGHT"
-            # CURVE 는 호 뒤로 레일이 이어지지 않는다(차수 2), BRANCH 는 이어진다(차수 3)
-            base = "BRANCH" if g.deg(J) >= 3 else "CURVE"
-            name = f"{base} {name_side}"
-            cands.append(Cand(name, J, lambda p: (0.0, p["l"]),
-                              math.degrees(math.atan2(u_lane[1], u_lane[0])),
-                              s.r, 900.0, 45.0, (i,)))
+        la = single_ladder(g, i, ang_tol)
+        if la:
+            groups.append([[[c]] for c in la])                                         # CURVE → BRANCH
             taken.add(i)
-            break
-    return cands
+    return groups
 
 
 # ── 모듈 형상 ↔ 도면 대조 ────────────────────────────────────────────────────
@@ -470,11 +473,10 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     if not segs:
         raise SystemExit("선·호를 찾지 못했습니다 (레이어 지정을 확인하세요)")
     g = Graph(segs, tol)
-    # 포함 관계(CURVE ⊂ BRANCH ⊂ U BRANCH ⊂ DOUBLE BRANCH, 사용자 제안서): 큰 모듈(호-직선-호)을 먼저 대조하고,
-    #  안 맞으면(폭이 W1/W2 가 아님 등) 그 호들을 풀어 포함된 작은 모듈(BRANCH / CURVE)로 다시 대조한다.
-    rejected: List[Tuple[Cand, str]] = []
-    accept = (lambda cd: conform(cd, param, tol)) if param is not None else None
-    cands = find_candidates(g, tol, ang_tol=1.0, max_w=max_w, stage=1, accept=accept, rejected=rejected)
+    # 포함 관계(사용자 제안서: CURVE ⊂ BRANCH ⊂ U BRANCH ⊂ DOUBLE BRANCH): 작은 형상부터 인식해 올라가다
+    #  안 되는 단계에서 멈추고, 멈춘 단계의 형상을 넣는다. 인식 = 형상(갈림·짝 호)과 파라미터(R·W·A) 일치.
+    #  넣을 때 도면 치수(L 직선)가 안 맞으면 한 단계씩 아래 형상으로 내려가 넣는다.
+    groups = find_groups(g, tol, ang_tol=1.0, max_w=max_w)
 
     l_list = tuple(x for x in L_CANDIDATES if x <= l_max) or (l_max,)
     if param is not None:
@@ -485,29 +487,33 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         # 모듈 블록 안의 선·호는 레이어 0 이라 삽입 레이어의 색을 따라간다
         lay.doc.layers.add(module_layer, color=module_color or 3)
     placed, skipped = [], []
-    done_segs: set = set()
 
-    def all_cands():                       # 1단계 후보를 다 본 뒤, 남은 호로 2단계 후보를 만든다
-        yield from cands
-        yield from find_candidates(g, tol, ang_tol=1.0, max_w=max_w, stage=2, pre_taken=done_segs)
-
-    for cd in all_cands():
-        if param is not None:
+    def recognized(alt) -> str:
+        """단계 인식: 파라미터(R·W·A)가 맞는가. 안 맞으면 이유."""
+        if param is None:
+            return ""
+        for cd in alt:
             why = conform(cd, param, tol)
             if why:
-                skipped.append((cd, why))
-                continue
-        res = fit(cd, segs, tol, l_list)
-        if res is None:
-            skipped.append((cd, "형상이 도면과 맞지 않음(붙은 직선이 짧거나 치수가 다름)" if param is None
-                            else f"붙은 직선이 L {l_list[0]:g} 보다 짧거나 치수가 다름"))
-            continue
+                return why
+        return ""
+
+    def try_fit(alt):
+        out = []
+        for cd in alt:
+            res = fit(cd, segs, tol, l_list)
+            if res is None:
+                return None
+            out.append((cd, res))
+        return out
+
+    def put(cd, res):
         l, par, hits_line, hits_arc = res
         idx, r, l, w, a = par
-        for i, lo, hi in hits_line:
-            segs[i].covered.append((lo, hi))
-        for i in hits_arc:
-            segs[i].used = True
+        for k, lo, hi in hits_line:
+            segs[k].covered.append((lo, hi))
+        for k in hits_arc:
+            segs[k].used = True
         anc = cd.anchor({"r": r, "l": l, "w": w, "a": a,
                          "h": mj.cross_rise(r, w, a) if mj.DEFS[idx][2] else 0.0})
         lay.place(cd.name, anc, cd.at, cd.heading, False, R=r, L=l, W=w, A=a)
@@ -516,17 +522,42 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         if module_color:
             ref.dxf.color = module_color
         placed.append((cd.name, r, l, w, a, cd.at))
-        done_segs.update(cd.segs)
 
-    # 파라미터에 안 맞아 버린 큰 모듈 후보 중, 작은 모듈로도 못 바뀌고 남은 자리만 알린다
-    arcs_done = {k for k in done_segs if segs[k].kind == "ARC"}
-    seen = set()
-    for cd, why in rejected:
-        arcs = frozenset(k for k in cd.segs if segs[k].kind == "ARC")
-        if any(k in arcs_done for k in arcs) or arcs in seen:
+    fit_why = "형상이 도면과 맞지 않음(붙은 직선이 짧거나 치수가 다름)" if param is None \
+        else f"붙은 직선이 L {l_list[0]:g} 보다 짧거나 치수가 다름"
+    for ladder in groups:
+        # 1) 작은 것부터 인식해 올라가기 — 인식 안 되는 단계에서 멈춤
+        reached, stop_why = [], ""
+        for level in ladder:
+            ok = [alt for alt in level if not recognized(alt)]
+            if not ok:
+                stop_why = f"{level[0][0].name}: " + recognized(level[0])
+                break
+            reached.append(ok)
+        # 2) 멈춘 단계부터 넣어 보고, 도면에 안 맞으면 한 단계씩 내려가기
+        done = None
+        for k in range(len(reached) - 1, -1, -1):
+            for alt in reached[k]:
+                got = try_fit(alt)
+                if got:
+                    done = (k, got)
+                    break
+            if done:
+                break
+        top = ladder[-1][0][0].name
+        if done is None:
+            first = reached[0][0][0] if reached else ladder[0][0][0]
+            names = "·".join(dict.fromkeys(lv[0][0].name.rsplit(" ", 1)[0] if lv[0][0].name.endswith(("LEFT", "RIGHT"))
+                                           else lv[0][0].name for lv in reached))
+            skipped.append((first, f"{fit_why} ({names} 도 안 들어감)" if reached else stop_why))
             continue
-        seen.add(arcs)
-        skipped.append((cd, why + " (포함된 작은 모듈로도 안 맞음)"))
+        k, got = done
+        for cd, res in got:
+            put(cd, res)
+        if k < len(ladder) - 1:
+            why = stop_why if k == len(reached) - 1 and stop_why else f"{reached[k + 1][0][0].name}: {fit_why}" \
+                if k + 1 < len(reached) else stop_why
+            skipped.append((got[0][0], f"{got[0][0].name.split(' ')[0]} 까지 넣음 ({why})"))
 
     # 모듈이 덮지 않은 부분만 남긴다
     plain_attr = {"layer": "RAIL"}
@@ -586,7 +617,8 @@ def substitute(in_path: str, out_path: Optional[str] = None, layers=None, tol: f
     lines += [f"   {k} {v}" for k, v in sorted(cnt.items())]
     lines.append(f"모듈로 못 바꾼 곳: 직선 {res['left_lines']}개, 호 {res['left_arcs']}개 (흰색으로 남김)")
     for cd, why in res["skipped"]:
-        lines.append(f"[주의] {cd.name} 자리 ({cd.at[0]:.0f}, {cd.at[1]:.0f}) - {why}")
+        tag = "[참고]" if "까지 넣음" in why else "[주의]"
+        lines.append(f"{tag} {cd.name} 자리 ({cd.at[0]:.0f}, {cd.at[1]:.0f}) - {why}")
     lines.append(f"저장: {out_path}")
     return 0, lines
 

@@ -30,7 +30,7 @@ Pt = Tuple[float, float]
 DEFAULTS = {
     "enabled": True,
     "through_extra_mm": 180.0,
-    "slot_tol_mm": 5.0,
+    "slot_tol_mm": 20.0,
 }
 
 # 플러그인 모듈 이름 → 제안서 약어 후보(좌우는 형상으로 다시 가린다)

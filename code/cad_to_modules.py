@@ -235,13 +235,26 @@ def _chain_partner(g: Graph, i: int, ang_tol: float) -> List[Tuple[int, Optional
     return out
 
 
-def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> List[Cand]:
+def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0,
+                    stage: Optional[int] = None, pre_taken=(), accept=None, rejected=None) -> List[Cand]:
+    """stage 1 = 호-(직선)-호 모듈, 2 = 호 하나 모듈(BRANCH/CURVE), None = 둘 다. pre_taken = 이미 모듈이 된 세그먼트.
+    accept(cand) 가 이유(문자열)를 돌려주면 그 후보는 호를 차지하지 않고 버린다(rejected 에 기록) - 같은 호로 다른 짝을 계속 찾는다."""
     segs = g.segs
     cands: List[Cand] = []
-    taken: set = set()
+    taken: set = set(pre_taken)
+
+    def claim(cd: Cand, used) -> bool:
+        why = accept(cd) if accept else ""
+        if why:
+            if rejected is not None:
+                rejected.append((cd, why))
+            return False
+        cands.append(cd)
+        taken.update(used)
+        return True
 
     # 1) 호-(직선)-호
-    for i, a in enumerate(segs):
+    for i, a in enumerate(segs if stage != 2 else []):
         if a.kind != "ARC" or i in taken:
             continue
         for j, mid, Ja, Jb in _chain_partner(g, i, ang_tol):
@@ -276,11 +289,13 @@ def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0)
                     name = "U BRANCH LEFT"             # 관통 = 로컬 x=w
                 else:
                     name = "U"
-                cands.append(Cand(name, J0, lambda p: (0.0, p["l"]), math.degrees(math.atan2(u[1], u[0])),
-                                  a.r, w, 45.0, tuple(x for x in (i, j, mid) if x is not None)))
-                taken.update({i, j} | ({mid} if mid is not None else set()))
-                break
-            if (not same_turn) and abs(sw_a - sw_b) <= ang_tol:
+                if claim(Cand(name, J0, lambda p: (0.0, p["l"]), math.degrees(math.atan2(u[1], u[0])),
+                              a.r, w, 45.0, tuple(x for x in (i, j, mid) if x is not None)),
+                         {i, j} | ({mid} if mid is not None else set())):
+                    break
+                continue
+            # 차선 이동(S자): 반대로 꺾이는 같은 각의 두 호. 90° 두 개(ㄱ·ㄴ 꺾임)는 S 가 아니다(A < 90)
+            if (not same_turn) and abs(sw_a - sw_b) <= ang_tol and sw_a < 90.0 - ang_tol:
                 # 차선 이동: 진행 방향 = 접합점에서 호가 뻗는 방향. 아래 접합점(Ja) 이 로컬 높이 l.
                 u_lane = ua
                 low, high = Ja, Jb
@@ -301,14 +316,14 @@ def find_candidates(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0)
                 left = cross(u_lane, chord2) > 0       # 이동이 진행 방향 왼쪽
                 name = f"{kind} {'LEFT' if left else 'RIGHT'}"
                 anchor = (lambda p: (p["w"], p["l"])) if left else (lambda p: (0.0, p["l"]))
-                cands.append(Cand(name, low, anchor,
-                                  math.degrees(math.atan2(u_lane[1], u_lane[0])),
-                                  a.r, w, sw_a, tuple(x for x in (i, j, mid) if x is not None)))
-                taken.update({i, j} | ({mid} if mid is not None else set()))
-                break
+                if claim(Cand(name, low, anchor,
+                              math.degrees(math.atan2(u_lane[1], u_lane[0])),
+                              a.r, w, sw_a, tuple(x for x in (i, j, mid) if x is not None)),
+                         {i, j} | ({mid} if mid is not None else set())):
+                    break
 
     # 2) 호 하나 — BRANCH / CURVE
-    for i, s in enumerate(segs):
+    for i, s in enumerate(segs if stage != 1 else []):
         if s.kind != "ARC" or i in taken:
             continue
         if abs(abs(s.sweep) - 90.0) > ang_tol:
@@ -455,7 +470,11 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     if not segs:
         raise SystemExit("선·호를 찾지 못했습니다 (레이어 지정을 확인하세요)")
     g = Graph(segs, tol)
-    cands = find_candidates(g, tol, ang_tol=1.0, max_w=max_w)
+    # 포함 관계(CURVE ⊂ BRANCH ⊂ U BRANCH ⊂ DOUBLE BRANCH, 사용자 제안서): 큰 모듈(호-직선-호)을 먼저 대조하고,
+    #  안 맞으면(폭이 W1/W2 가 아님 등) 그 호들을 풀어 포함된 작은 모듈(BRANCH / CURVE)로 다시 대조한다.
+    rejected: List[Tuple[Cand, str]] = []
+    accept = (lambda cd: conform(cd, param, tol)) if param is not None else None
+    cands = find_candidates(g, tol, ang_tol=1.0, max_w=max_w, stage=1, accept=accept, rejected=rejected)
 
     l_list = tuple(x for x in L_CANDIDATES if x <= l_max) or (l_max,)
     if param is not None:
@@ -466,7 +485,13 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         # 모듈 블록 안의 선·호는 레이어 0 이라 삽입 레이어의 색을 따라간다
         lay.doc.layers.add(module_layer, color=module_color or 3)
     placed, skipped = [], []
-    for cd in cands:
+    done_segs: set = set()
+
+    def all_cands():                       # 1단계 후보를 다 본 뒤, 남은 호로 2단계 후보를 만든다
+        yield from cands
+        yield from find_candidates(g, tol, ang_tol=1.0, max_w=max_w, stage=2, pre_taken=done_segs)
+
+    for cd in all_cands():
         if param is not None:
             why = conform(cd, param, tol)
             if why:
@@ -491,6 +516,17 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         if module_color:
             ref.dxf.color = module_color
         placed.append((cd.name, r, l, w, a, cd.at))
+        done_segs.update(cd.segs)
+
+    # 파라미터에 안 맞아 버린 큰 모듈 후보 중, 작은 모듈로도 못 바뀌고 남은 자리만 알린다
+    arcs_done = {k for k in done_segs if segs[k].kind == "ARC"}
+    seen = set()
+    for cd, why in rejected:
+        arcs = frozenset(k for k in cd.segs if segs[k].kind == "ARC")
+        if any(k in arcs_done for k in arcs) or arcs in seen:
+            continue
+        seen.add(arcs)
+        skipped.append((cd, why + " (포함된 작은 모듈로도 안 맞음)"))
 
     # 모듈이 덮지 않은 부분만 남긴다
     plain_attr = {"layer": "RAIL"}

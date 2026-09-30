@@ -341,9 +341,30 @@ namespace RailPlugin
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
             var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
             var br = new BlockReference(pos, defId);
+            br.LayerId = EnsureModuleLayer(db, tr);
             ms.AppendEntity(br); tr.AddNewlyCreatedDBObject(br, true);
             br.XData = XData(l, idx, 7, w, 2, r, a);
             return br.ObjectId;
+        }
+
+        // 모듈 전용 레이어 — 블록 안 선·호는 0 레이어·색 BYLAYER 라 이 레이어 색(초록)으로 보인다.
+        //  선·호 → 모듈 치환(cad_to_modules) 결과와 같은 이름·색. 이미 있으면 사용자가 바꾼 색을 그대로 둔다.
+        public const string MODULE_LAYER = "RAIL_MODULE";
+        public const short MODULE_COLOR = 3;     // 초록
+
+        public static ObjectId EnsureModuleLayer(Database db, Transaction tr)
+        {
+            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (lt.Has(MODULE_LAYER)) return lt[MODULE_LAYER];
+            lt.UpgradeOpen();
+            var ltr = new LayerTableRecord
+            {
+                Name = MODULE_LAYER,
+                Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, MODULE_COLOR),
+            };
+            ObjectId id = lt.Add(ltr);
+            tr.AddNewlyCreatedDBObject(ltr, true);
+            return id;
         }
 
         /// <summary>이미 배치된 모듈의 규격 변경 — 새 규격의 정의로 바꿔 끼운다(다른 인스턴스는 그대로).</summary>
@@ -355,6 +376,7 @@ namespace RailPlugin
             ObjectId defId = ModuleGeom.EnsureBlock(br.Database, tr, idx, r, l, w, a);
             if (!br.IsWriteEnabled) br.UpgradeOpen();
             br.BlockTableRecord = defId;
+            br.LayerId = EnsureModuleLayer(br.Database, tr);     // 옛 도면 모듈도 모듈 색으로
             br.XData = XData(l, idx, 7, w, 2, r, a);
         }
 

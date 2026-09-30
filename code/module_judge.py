@@ -168,6 +168,9 @@ def _ar(cx, cy, r, a0, a1, role="arc") -> Piece:
                  m=(cx + r * math.cos(tm), cy + r * math.sin(tm)))
 
 
+THROUGH_EXTRA = 180.0   # ModuleGeom.ThroughExtra — 분기류 관통 위쪽 팔 = L + 180 (MODULE FORMAT 제안서)
+
+
 def build_local(idx: int, r: float, l: float, w: float, a: float) -> Tuple[List[Piece], List[Feature]]:
     """모듈 로컬 형상과 판정 단위(Feature). 좌표계·치수는 ModuleGeom.Build 와 동일."""
     r, l, w, a = clamp(idx, r, l, w, a)
@@ -218,7 +221,7 @@ def build_local(idx: int, r: float, l: float, w: float, a: float) -> Tuple[List[
             add(_ln(r, l + r, r + l, l + r, "stub"))
         F.append(Feature("corner", [i], []))
     elif name in ("BRANCH LEFT", "BRANCH RIGHT"):
-        add(_ln(0, 0, 0, 2 * l + r, "through"))
+        add(_ln(0, 0, 0, 2 * l + r + THROUGH_EXTRA, "through"))
         if name == "BRANCH LEFT":
             i = add(_ar(-r, l, r, 0, 90))
             add(_ln(-r, l + r, -r - l, l + r, "stub"))
@@ -231,15 +234,15 @@ def build_local(idx: int, r: float, l: float, w: float, a: float) -> Tuple[List[
         add(_ln(w, 0, w, l, "leg"))
         arch([])
     elif name == "DOUBLE BRANCH":
-        add(_ln(0, 0, 0, 2 * l + r, "through"))
-        add(_ln(w, 0, w, 2 * l + r, "through"))
+        add(_ln(0, 0, 0, 2 * l + r + THROUGH_EXTRA, "through"))
+        add(_ln(w, 0, w, 2 * l + r + THROUGH_EXTRA, "through"))
         arch([(0.0, l), (w, l)])
     elif name == "U BRANCH LEFT":
-        add(_ln(w, 0, w, 2 * l + r, "through"))
+        add(_ln(w, 0, w, 2 * l + r + THROUGH_EXTRA, "through"))
         add(_ln(0, 0, 0, l, "leg"))
         arch([(w, l)])
     elif name == "U BRANCH RIGHT":
-        add(_ln(0, 0, 0, 2 * l + r, "through"))
+        add(_ln(0, 0, 0, 2 * l + r + THROUGH_EXTRA, "through"))
         add(_ln(w, 0, w, l, "leg"))
         arch([(0.0, l)])
     elif name in ("N LEFT", "N RIGHT", "BY PASS LEFT", "BY PASS RIGHT", "S LEFT", "S RIGHT"):

@@ -13,7 +13,7 @@
   MODULEPARAM R/L/W1/W2/A/M1/M2 (파일당 1개)
 
 모듈 형상은 제안서 기준이다: 분기류(BL·BR·DB·UBL·UBR)의 관통 위쪽 팔 = L + 180(through_extra_mm).
-플러그인 블록은 이 팔이 180 짧다 → 슬롯③·④ 는 제안서 위치(도면 선을 따라 180 더 간 점)로 잡는다.
+플러그인 블록도 같은 형상(ModuleGeom.ThroughExtra)이다.
 U·DB·UBL·UBR 의 폭도 W(W1/W2) 로 표현한다(가운데 직선 = W − 2R).
 """
 from __future__ import annotations
@@ -236,8 +236,8 @@ def match_module(inst, mc: dict, log) -> Optional[SMod]:
     E = float(mc["through_extra_mm"])
     ends = _free_ends(inst, 0.5)
     R, L, W, A = inst.R, inst.L, inst.W, inst.A
-    for t in FAMILY.get(inst.name, []):
-        tslots0, _ = template(t, R, L, W, A, 0.0)
+    for t, Em in ((t, E) for t in FAMILY.get(inst.name, [])):   # 플러그인 블록 = 제안서 형상(관통 위 팔 L+180)
+        tslots0, _ = template(t, R, L, W, A, Em)
         if len(tslots0) != len(ends):
             continue
         for ang in (0, 90, 180, 270):
@@ -256,7 +256,7 @@ def match_module(inst, mc: dict, log) -> Optional[SMod]:
                 if len(order) != len(tslots0):
                     continue
                 # 끝점만으론 대칭 형상(DB 등)의 위·아래를 못 가린다 → 경로 probe 가 블록 형상 위에 있어야 함
-                _, tp0 = template(t, R, L, W, A, 0.0)
+                _, tp0 = template(t, R, L, W, A, Em)
                 if not all(_on_pieces(inst, add(ref, rot_cw(p.probe, ang)), tol) for p in tp0):
                     continue
                 tslots, tpaths = template(t, R, L, W, A, E)
@@ -366,14 +366,11 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
     def margin(s: TSlot) -> float:
         return M2 if s.m2 else M1
 
-    # 1) 도면 엣지에서 모듈이 차지한 부분 빼기(플러그인 조각 + 제안서 관통 연장분)
+    # 1) 도면 엣지에서 모듈이 차지한 부분 빼기
     cover_lines, cover_arcs = [], []
     for m in smods:
         for p in m.inst.pieces:
             (cover_lines if p.kind == "LINE" else cover_arcs).append(p)
-        for s, pe in zip(m.slots, m.plugin_ends):
-            if dist(s.pos, pe) > tol:
-                cover_lines.append(mj.Piece("LINE", "ext", pe, s.pos))
 
     plain = []   # (kind, a, b, edge)  a→b = 진행 방향
     for e in unified_edges:

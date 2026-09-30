@@ -20,6 +20,8 @@ namespace RailPlugin
     public static class ModuleGeom
     {
         const double D2R = Math.PI / 180.0;
+        // MODULE FORMAT 제안서: 분기류(BRANCH L/R, DOUBLE BRANCH, U BRANCH L/R) 관통 위쪽 팔 = L + 180
+        public const double ThroughExtra = 180.0;
         const double EPS = 1e-6;
 
         public sealed class Def
@@ -103,7 +105,7 @@ namespace RailPlugin
                 case "Y":
                     return l + r + (def.Name == "U" ? 0.0 : l);   // U 는 아치 꼭대기까지
                 default:
-                    return 2.0 * l + r;
+                    return 2.0 * l + r + ThroughExtra;   // 분기류: 관통 위쪽 팔 L+180(제안서)
             }
         }
 
@@ -209,13 +211,50 @@ namespace RailPlugin
             Clamp(idx, ref r, ref l, ref w, ref a);
             string name = BlockName(idx, r, l, w, a);
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
-            if (bt.Has(name)) return bt[name];
+            if (bt.Has(name))
+            {
+                // 같은 이름이라도 형상이 지금 정의와 다르면(예: 관통 팔 L+180 이전 블록) 내용을 새로 채운다.
+                //  블록 정의를 고치면 그 블록을 쓰는 도면의 모듈이 모두 함께 바뀐다.
+                ObjectId have = bt[name];
+                var old = (BlockTableRecord)tr.GetObject(have, OpenMode.ForRead);
+                if (!SameShape(old, tr, idx, r, l, w, a))
+                {
+                    old.UpgradeOpen();
+                    foreach (ObjectId eid in old) ((Entity)tr.GetObject(eid, OpenMode.ForWrite)).Erase();
+                    Fill(old, tr, idx, r, l, w, a);
+                }
+                return have;
+            }
             if (!bt.IsWriteEnabled) bt.UpgradeOpen();
             var btr = new BlockTableRecord { Name = name, Origin = Point3d.Origin };
             ObjectId id = bt.Add(btr);
             tr.AddNewlyCreatedDBObject(btr, true);
             Fill(btr, tr, idx, r, l, w, a);
             return id;
+        }
+
+        // 블록 정의 내용이 지금 형상과 같은가 — 선·호 개수와 전체 범위로 비교
+        static bool SameShape(BlockTableRecord btr, Transaction tr, int idx, double r, double l, double w, double a)
+        {
+            int n0 = 0, n1 = 0;
+            var e0 = new Extents3d(); var e1 = new Extents3d();
+            bool f0 = false, f1 = false;
+            foreach (ObjectId id in btr)
+            {
+                var ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                if (!(ent is Line) && !(ent is Arc)) continue;
+                n0++;
+                try { var x = ent.GeometricExtents; if (!f0) { e0 = x; f0 = true; } else e0.AddExtents(x); } catch { }
+            }
+            foreach (Entity ent in Build(idx, r, l, w, a))
+            {
+                n1++;
+                try { var x = ent.GeometricExtents; if (!f1) { e1 = x; f1 = true; } else e1.AddExtents(x); } catch { }
+                ent.Dispose();
+            }
+            if (n0 != n1 || f0 != f1) return false;
+            if (!f0) return true;
+            return e0.MinPoint.DistanceTo(e1.MinPoint) < 0.01 && e0.MaxPoint.DistanceTo(e1.MaxPoint) < 0.01;
         }
 
         // ── 엔티티 생성 ──────────────────────────────────────────────────────
@@ -256,13 +295,13 @@ namespace RailPlugin
                     break;
 
                 case "BRANCH LEFT":                      // 본선 관통 + 좌측 분기
-                    e.Add(Ln(0, 0, 0, 2 * l + r));
+                    e.Add(Ln(0, 0, 0, 2 * l + r + ThroughExtra));
                     e.Add(Ar(-r, l, r, 0, 90));
                     e.Add(Ln(-r, l + r, -r - l, l + r));
                     break;
 
                 case "BRANCH RIGHT":                     // 본선 관통 + 우측 분기
-                    e.Add(Ln(0, 0, 0, 2 * l + r));
+                    e.Add(Ln(0, 0, 0, 2 * l + r + ThroughExtra));
                     e.Add(Ar(r, l, r, 90, 180));
                     e.Add(Ln(r, l + r, r + l, l + r));
                     break;
@@ -274,19 +313,19 @@ namespace RailPlugin
                     break;
 
                 case "DOUBLE BRANCH":                    // 두 본선 관통 + 상부 아치
-                    e.Add(Ln(0, 0, 0, 2 * l + r));
-                    e.Add(Ln(w, 0, w, 2 * l + r));
+                    e.Add(Ln(0, 0, 0, 2 * l + r + ThroughExtra));
+                    e.Add(Ln(w, 0, w, 2 * l + r + ThroughExtra));
                     Arch(e, r, l, w);
                     break;
 
                 case "U BRANCH LEFT":                    // 본선=우측 관통, 좌측으로 U 분기
-                    e.Add(Ln(w, 0, w, 2 * l + r));
+                    e.Add(Ln(w, 0, w, 2 * l + r + ThroughExtra));
                     e.Add(Ln(0, 0, 0, l));
                     Arch(e, r, l, w);
                     break;
 
                 case "U BRANCH RIGHT":                   // 본선=좌측 관통, 우측으로 U 분기
-                    e.Add(Ln(0, 0, 0, 2 * l + r));
+                    e.Add(Ln(0, 0, 0, 2 * l + r + ThroughExtra));
                     e.Add(Ln(w, 0, w, l));
                     Arch(e, r, l, w);
                     break;

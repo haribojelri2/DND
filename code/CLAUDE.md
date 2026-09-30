@@ -93,6 +93,13 @@ Plugin modules are matched to spec types by free-end positions + outward directi
 rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/LINK/MODULE lines exactly
 (`tmp guide_examples.py`); drawings without modules and `enabled=false` are byte-identical to before.
 
+### Plugin Module tab (RailPlugin/ModuleCommands.cs) — one parameter set per drawing
+
+R/L/W1/W2/A/M1/M2 stored in the drawing's NOD XRecord `RAILPLUGIN_MODULEPARAM` (= MODULEPARAM). Commands: RAILMODPARAM(P) set,
+RAILMOD place with it (W-modules pick W1/W2), RAILMODAPPLY re-make existing modules, RAILMODEXTRACT(P) derive R/W1/W2/A from
+modules or plain lines/arcs (L, M1, M2 kept). `ModuleGeom.EnsureBlock` refills a same-named block whose shape differs.
+Headless check: RAILMODPARAMTEST via accoreconsole.
+
 ### Module substitution (cad_to_modules.py) — CAD → CAD
 
 `python cad_to_modules.py <in.dxf> [out.dxf] [--layer RAIL] [--tol 8] [--L 200]` rewrites a plain LINE/ARC drawing into

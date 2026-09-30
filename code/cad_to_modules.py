@@ -15,6 +15,10 @@
 
 모듈 하나가 덮는 직선 길이는 L 로 정해진다(다리·관통 직선). 붙어 있는 직선이 짧으면 L 을 줄여서 맞추고,
 그래도 안 맞으면 그 자리는 바꾸지 않고 경고한다. 모듈이 덮지 않은 선·호는 그대로 남긴다.
+
+도면 파라미터 모드(--param-from-input, 플러그인·GUI 치환 버튼): 입력 도면에 저장된 플러그인 파라미터 한 세트
+(R/L/W1/W2/A/M1/M2)로만 치환한다 - R 같음, 폭 모듈은 W1/W2 중 하나, 대각 모듈은 A, L 은 고정(줄이지 않음).
+안 맞는 자리는 선·호로 남기고 알린다. 결과 도면에도 같은 파라미터를 기록한다. 파라미터가 없으면 치환하지 않는다.
 """
 from __future__ import annotations
 
@@ -421,10 +425,31 @@ def fit(cand: Cand, segs: List[Seg], tol: float, L_list=L_CANDIDATES):
     return None
 
 
+def conform(cd: Cand, param, tol: float, ang_tol: float = 1.0) -> str:
+    """후보를 도면 파라미터 한 세트에 맞춘다(R·W·A 를 파라미터 값으로 고정). 안 맞으면 이유, 맞으면 ""."""
+    R0, _L0, W1, W2, A0 = param[:5]
+    if abs(cd.R - R0) > tol:
+        return f"호 반지름 {cd.R:.0f} 이 파라미터 R {R0:g} 과 다름"
+    cd.R = R0
+    idx = next(k for k, d in enumerate(mj.DEFS) if d[0] == cd.name)
+    _, uses_w, uses_a = mj.DEFS[idx]
+    if uses_w:
+        best = min((W1, W2), key=lambda w: abs(cd.W - w))
+        if abs(cd.W - best) > tol:
+            return f"폭 {cd.W:.0f} 이 W1 {W1:g} / W2 {W2:g} 어느 쪽과도 다름"
+        cd.W = best
+    if uses_a:
+        if abs(cd.A - A0) > ang_tol:
+            return f"대각 각도 {cd.A:.1f}° 가 파라미터 A {A0:g}° 와 다름"
+        cd.A = A0
+    return ""
+
+
 # ── 본체 ────────────────────────────────────────────────────────────────────
 def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
             module_color: int = 0, plain_color: int = 0, module_layer: str = "",
-            max_w: float = 4000.0, log=print) -> Dict[str, Any]:
+            max_w: float = 4000.0, log=print, param=None) -> Dict[str, Any]:
+    """param = 도면 파라미터 (R, L, W1, W2, A, M1, M2) 이면 그 한 세트로만 치환하고 결과 도면에 기록한다."""
     doc = ezdxf.readfile(in_path)
     segs = read_segments(doc, layers)
     if not segs:
@@ -433,15 +458,24 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     cands = find_candidates(g, tol, ang_tol=1.0, max_w=max_w)
 
     l_list = tuple(x for x in L_CANDIDATES if x <= l_max) or (l_max,)
+    if param is not None:
+        l_list = (float(param[1]),)                 # 파라미터 L 고정 - 줄여서 맞추지 않는다
     lay = Lay()
+    lay.param = tuple(float(v) for v in param) if param is not None else None
     if module_layer:
         # 모듈 블록 안의 선·호는 레이어 0 이라 삽입 레이어의 색을 따라간다
         lay.doc.layers.add(module_layer, color=module_color or 3)
     placed, skipped = [], []
     for cd in cands:
+        if param is not None:
+            why = conform(cd, param, tol)
+            if why:
+                skipped.append((cd, why))
+                continue
         res = fit(cd, segs, tol, l_list)
         if res is None:
-            skipped.append((cd, "형상이 도면과 맞지 않음(붙은 직선이 짧거나 치수가 다름)"))
+            skipped.append((cd, "형상이 도면과 맞지 않음(붙은 직선이 짧거나 치수가 다름)" if param is None
+                            else f"붙은 직선이 L {l_list[0]:g} 보다 짧거나 치수가 다름"))
             continue
         l, par, hits_line, hits_arc = res
         idx, r, l, w, a = par
@@ -492,6 +526,35 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
             "segs": len(segs)}
 
 
+def substitute(in_path: str, out_path: Optional[str] = None, layers=None, tol: float = 8.0,
+               log=print) -> Tuple[int, List[str]]:
+    """치환 버튼(플러그인·GUI) 공용: 입력 도면에 저장된 파라미터로 치환한다.
+    반환 (코드, 보고 줄) - 0 성공, 3 파라미터 없음(치환 안 함)."""
+    import collections
+    import module_map
+    param = module_map.read_drawing_param(ezdxf.readfile(in_path))
+    if param is None:
+        msg = ["도면에 모듈 파라미터(R·L·W1·W2·A·M1·M2)가 저장돼 있지 않습니다.",
+               "CAD 플러그인 Module 탭 [파라미터 설정]에서 저장한 뒤 다시 치환하세요. 치환하지 않았습니다."]
+        return 3, msg
+    out_path = out_path or (in_path.rsplit(".", 1)[0] + "_modules.dxf")
+    try:
+        res = convert(in_path, out_path, layers, tol, float(param[1]), module_color=3, plain_color=7,
+                      module_layer="RAIL_MODULE", log=log, param=param)
+    except SystemExit as e:                     # 선·호 없음 등
+        where = f"레이어 {', '.join(layers)}" if layers else "도면"
+        return 1, [f"{where}에서 {e}"]
+    cnt = collections.Counter(m[0] for m in res["modules"])
+    lines = ["파라미터 R/L/W1/W2/A/M1/M2 = " + "/".join(f"{v:g}" for v in param),
+             f"모듈 {len(res['modules'])}개로 치환 (선·호 {res['segs']}개 중)"]
+    lines += [f"   {k} {v}" for k, v in sorted(cnt.items())]
+    lines.append(f"모듈로 못 바꾼 곳: 직선 {res['left_lines']}개, 호 {res['left_arcs']}개 (흰색으로 남김)")
+    for cd, why in res["skipped"]:
+        lines.append(f"[주의] {cd.name} 자리 ({cd.at[0]:.0f}, {cd.at[1]:.0f}) - {why}")
+    lines.append(f"저장: {out_path}")
+    return 0, lines
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="도면의 선·호를 기본 모듈로 치환")
     ap.add_argument("input")
@@ -504,7 +567,14 @@ def main(argv=None) -> int:
     ap.add_argument("--module-layer", default="", help="모듈을 놓을 레이어 이름(색을 주려면 지정)")
     ap.add_argument("--max-w", type=float, default=4000.0,
                     help="되돌림·차선이동 모듈로 볼 최대 폭 mm (넘으면 곡선·분기 모듈로 따로 처리)")
+    ap.add_argument("--param-from-input", action="store_true",
+                    help="입력 도면에 저장된 플러그인 파라미터 한 세트로만 치환(치환 버튼과 같음)")
     a = ap.parse_args(argv)
+    if a.param_from_input:
+        layers = [s.strip() for s in a.layer.split(",") if s.strip()] or None
+        code, lines = substitute(a.input, a.output, layers, a.tol)
+        print("\n".join(lines))
+        return code
     out = a.output or (a.input.rsplit(".", 1)[0] + "_modules.dxf")
     layers = [s.strip() for s in a.layer.split(",") if s.strip()] or None
     res = convert(a.input, out, layers, a.tol, a.L,

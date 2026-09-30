@@ -61,6 +61,30 @@ namespace RailPlugin
             return p;
         }
 
+        /// <summary>도면에 파라미터가 저장돼 있는지 (없으면 Get 은 기본값을 돌려준다).</summary>
+        public static bool Has(Database db)
+        {
+            try
+            {
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    var nod = (DBDictionary)tr.GetObject(db.NamedObjectsDictionaryId, OpenMode.ForRead);
+                    bool ok = false;
+                    if (nod.Contains(KEY))
+                    {
+                        var xr = (Xrecord)tr.GetObject(nod.GetAt(KEY), OpenMode.ForRead);
+                        int n = 0;
+                        if (xr.Data != null) foreach (TypedValue tv in xr.Data)
+                            if (tv.TypeCode == (int)DxfCode.Real) n++;
+                        ok = n >= 7;
+                    }
+                    tr.Commit();
+                    return ok;
+                }
+            }
+            catch { return false; }
+        }
+
         public static void Set(Database db, P p)
         {
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -606,6 +630,96 @@ namespace RailPlugin
             ed.WriteMessage(joined ? $"\nRAILMOD: {def.Name} 생성 - 기존 끝점에 접합." : $"\nRAILMOD: {def.Name} 생성.");
         }
 
+        // 선·호 → 모듈 치환: 현재 도면을 DXF 로 내보내 변환기(DXFtoMAP.exe --cad2mod)로 치환하고 결과 도면을 연다.
+        //  도면에 저장된 파라미터 한 세트(R·L·W1·W2·A)로만 치환 — 안 맞는 곳은 흰색 선·호로 남는다.
+        //  파라미터가 저장돼 있지 않으면 알리기만 한다.
+        [CommandMethod("RAILMODCONV", CommandFlags.Session)]
+        public void RailModConv()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            Editor ed = doc.Editor;
+            if (!ModuleParams.Has(doc.Database))
+            {
+                string m = "도면에 모듈 파라미터가 저장돼 있지 않습니다.\n[파라미터 설정] 또는 [도면에서 추출]로 저장한 뒤 다시 실행하세요.";
+                ed.WriteMessage("\nRAILMODCONV: " + m.Replace("\n", " "));
+                try { System.Windows.MessageBox.Show(m, "선·호 → 모듈 치환", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning); } catch { }
+                return;
+            }
+            string exe = Cad2Map.Resolve();
+            if (exe == null) { ed.WriteMessage("\nRAILMODCONV: 변환기(" + Cad2Map.EXE + ")를 찾지 못했습니다."); return; }
+            // 레일 레이어: 레일 선·호 하나를 고르면 그 레이어만 치환한다 (Enter = 모든 레이어)
+            string layer = "";
+            var peo = new PromptEntityOptions("\n레일 선·호 하나 선택 (그 레이어만 치환) <Enter = 모든 레이어>: ") { AllowNone = true };
+            var per = ed.GetEntity(peo);
+            if (per.Status == PromptStatus.Cancel) return;
+            if (per.Status == PromptStatus.OK)
+                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
+                {
+                    layer = ((Entity)tr.GetObject(per.ObjectId, OpenMode.ForRead)).Layer;
+                    tr.Commit();
+                }
+            string outp = RunConvert(doc, exe, layer);
+            if (outp == null) return;
+            try { Application.DocumentManager.Open(outp, false); }
+            catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 결과 도면 열기 실패 - " + ex.Message + " (" + outp + ")"); }
+        }
+
+        // 치환 본체: DXF 내보내기 → 변환기 --cad2mod → 보고 출력. 성공하면 결과 도면 경로, 아니면 null.
+        static string RunConvert(Document doc, string exe, string layer)
+        {
+            Editor ed = doc.Editor;
+            ed.WriteMessage("\nRAILMODCONV: 치환 대상 레이어 = " + (layer.Length > 0 ? layer : "전체"));
+            string dxf;
+            try { dxf = Cad2Map.ExportCurrent(doc, "선·호 → 모듈 치환: 원본 DXF 저장 위치 (결과는 같은 폴더의 _modules.dxf)"); }
+            catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 도면 내보내기 실패 - " + ex.Message); return null; }
+            if (dxf == null) return null;
+            string outp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(dxf),
+                                                 System.IO.Path.GetFileNameWithoutExtension(dxf) + "_modules.dxf");
+            string report = outp.Substring(0, outp.Length - 4) + "_result.txt";
+            try { if (System.IO.File.Exists(report)) System.IO.File.Delete(report); } catch { }
+            ed.WriteMessage("\nRAILMODCONV: 치환 중... (" + System.IO.Path.GetFileName(outp) + ")");
+            int code;
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = System.IO.Path.GetDirectoryName(exe),
+                    Arguments = "--cad2mod \"" + dxf + "\" \"" + outp + "\" --layer \"" + layer + "\"",
+                };
+                using (var pr = System.Diagnostics.Process.Start(psi))
+                {
+                    if (!pr.WaitForExit(600000)) { try { pr.Kill(); } catch { } ed.WriteMessage("\nRAILMODCONV: 10분 안에 끝나지 않아 중단했습니다."); return null; }
+                    code = pr.ExitCode;
+                }
+            }
+            catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 변환기 실행 실패 - " + ex.Message); return null; }
+            string text = "";
+            try { if (System.IO.File.Exists(report)) text = System.IO.File.ReadAllText(report, System.Text.Encoding.UTF8).Trim(); } catch { }
+            foreach (string ln in text.Split('\n')) ed.WriteMessage("\n  " + ln.TrimEnd('\r'));
+            if (code != 0 || !System.IO.File.Exists(outp))
+            {
+                try { System.Windows.MessageBox.Show(text.Length > 0 ? text : "치환하지 못했습니다 (코드 " + code + ").", "선·호 → 모듈 치환", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning); } catch { }
+                return null;
+            }
+            return outp;
+        }
+
+        // 헤드리스 검증용: RAILMODCONV 와 같은 본체(전체 레이어, 결과 도면은 열지 않음)
+        [CommandMethod("RAILMODCONVTEST")]
+        public void RailModConvTest()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            if (!ModuleParams.Has(doc.Database)) { ed.WriteMessage("\nRAILMODCONVTEST: 파라미터 없음 - 치환 안 함"); return; }
+            string exe = Cad2Map.Resolve();
+            if (exe == null) { ed.WriteMessage("\nRAILMODCONVTEST: 변환기 없음"); return; }
+            string outp = RunConvert(doc, exe, "");
+            ed.WriteMessage("\nRAILMODCONVTEST: " + (outp ?? "실패"));
+        }
+
         // 모듈 삭제: 선택한 모듈을 지우고, 참조가 없어진 모듈 블록 정의도 정리한다.
         [CommandMethod("RAILMODDEL")]
         public void RailModDel()
@@ -939,6 +1053,8 @@ namespace RailPlugin
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcSpc });
 
                 var srcE = new Autodesk.Windows.RibbonPanelSource { Title = "편집" };
+                srcE.Items.Add(MakeCmdButton("선·호 →\n모듈 치환", "RAILMODCONV",
+                    "선·호로 그린 도면을 도면 파라미터 한 세트로 모듈로 바꾼 새 도면(_modules.dxf)을 엽니다. 안 맞는 곳은 흰색 선·호로 남깁니다"));
                 srcE.Items.Add(MakeCmdButton("모듈\n삭제", "RAILMODDEL", "선택한 모듈을 지우고 안 쓰는 블록 정의를 정리합니다"));
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcE });
 

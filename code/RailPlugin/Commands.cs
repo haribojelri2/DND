@@ -433,7 +433,9 @@ namespace RailPlugin
         //  저장 위치는 사용자가 대화상자에서 지정 (기본값: 도면 폴더 + 도면 이름.dxf, 미저장 도면은 내 문서).
         //  변환기가 map 을 DXF 옆에 쓰므로 여기서 고른 폴더에 산출물이 모인다. 취소하면 null.
         //  헤드리스 검증용: 환경변수 RAILPLUGIN_NODIALOG=1 이면 대화상자 없이 기본 경로 사용.
-        public static string ExportCurrent(Document doc)
+        public static string ExportCurrent(Document doc) => ExportCurrent(doc, null);
+
+        public static string ExportCurrent(Document doc, string title)
         {
             string name = doc.Name ?? "Drawing";
             string stem = System.IO.Path.GetFileNameWithoutExtension(name);
@@ -448,7 +450,7 @@ namespace RailPlugin
             {
                 var dlg = new Microsoft.Win32.SaveFileDialog
                 {
-                    Title = "CAD→MAP 변환용 DXF 저장 위치 (map 도 같은 폴더에 생성됩니다)",
+                    Title = title ?? "CAD→MAP 변환용 DXF 저장 위치 (map 도 같은 폴더에 생성됩니다)",
                     Filter = "DXF 도면 (*.dxf)|*.dxf",
                     DefaultExt = "dxf",
                     AddExtension = true,

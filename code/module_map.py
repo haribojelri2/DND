@@ -5,10 +5,10 @@
 
   NODE        이격 기준. 모듈 NODE = 슬롯 CAD 점에서 바깥으로 M1(관통 위쪽 슬롯은 M2) 밀어낸 점.
               뒤에 ModuleID / SlotID 필드가 붙는다(모듈과 무관한 NODE 는 공란).
-  LINK        모듈 안: 슬롯 NODE 끼리(직선 S, 90° 곡선 L/R, 아치 U, S자 N) — 길이 = 경로 + 양 끝 마진.
+  LINK        모듈 안: 슬롯 NODE 끼리(직선 S, 90° 곡선 L/R, 아치 U, S자 N) - 길이 = 경로 + 양 끝 마진.
               모듈 사이: 마주보는 슬롯 NODE 를 직선 S 로(길이 = 간격 g − 양쪽 마진).
               마진이 겹치면(g < 두 마진 합) 그 두 슬롯 NODE 는 만들지 않고 두 곡선을 U/N 링크 하나로 잇는다.
-  MODULE      ID/Type/Angle/X/Y/Slot1/Slot2/… — X,Y = 슬롯① CAD 좌표, Angle = 0/90/180/270(시계 방향,
+  MODULE      ID/Type/Angle/X/Y/Slot1/Slot2/… - X,Y = 슬롯① CAD 좌표, Angle = 0/90/180/270(시계 방향,
               가이드 예시 3 기준), SlotN = 직선으로 이어진 다른 모듈 슬롯 "ID-번호".
   MODULEPARAM R/L/W1/W2/A/M1/M2 (파일당 1개)
 
@@ -47,7 +47,7 @@ FAMILY = {
     "Y": ["Y"],
 }
 USES_W = {"U", "DB", "UBL", "UBR", "NL", "NR", "BPL", "BPR", "SL", "SR"}
-# 마진이 겹칠 때 U/N 한 링크로 합칠 수 있는 슬롯(90° 곡선 끝) — 가이드 5장
+# 마진이 겹칠 때 U/N 한 링크로 합칠 수 있는 슬롯(90° 곡선 끝) - 가이드 5장
 MERGEABLE = {"C": {1, 2}, "Y": {2, 3}, "BL": {2}, "BR": {2}}
 
 
@@ -141,7 +141,7 @@ def template(t: str, R: float, L: float, W: float, A: float, E: float):
                  TSlot((0.0, top), (0.0, 1.0), True)]
         paths = [arch, TPath(1, 3, "line", top, (0.0, L + R), (0.0, 1.0))]
         return (slots, paths) if t == "UBL" else _mirror(slots, paths)
-    # S자 계열(NL/NR/BPL/BPR/SL/SR) — 참고 슬라이드: D = [W − 2R(1 − cosA)]/sinA
+    # S자 계열(NL/NR/BPL/BPR/SL/SR) - 참고 슬라이드: D = [W − 2R(1 − cosA)]/sinA
     ar = math.radians(A)
     D = (W - 2 * R * (1 - math.cos(ar))) / math.sin(ar)
     h = 2 * R * math.sin(ar) + D * math.cos(ar)
@@ -264,7 +264,7 @@ def match_module(inst, mc: dict, log) -> Optional[SMod]:
                 paths = [TPath(p.a, p.b, p.kind, p.length, add(ref, rot_cw(p.probe, ang)), rot_cw(p.tan, ang))
                          for p in tpaths]
                 return SMod(inst.no, inst, t, ang, ref, slots, paths, [ends[k][0] for k in order])
-    log(f"[경고] 모듈 {inst.name} @({inst.insert[0]:.0f},{inst.insert[1]:.0f}) 을 제안서 형식에 맞추지 못함 — 일반 형상으로 처리")
+    log(f"[경고] 모듈 {inst.name} @({inst.insert[0]:.0f},{inst.insert[1]:.0f}) 을 제안서 형식에 맞추지 못함 - 일반 형상으로 처리")
     return None
 
 
@@ -357,11 +357,11 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
     W1 = ws[0] if ws else 0.0
     W2 = ws[1] if len(ws) > 1 else W1
     if len(rc) > 1 or len(lc) > 1:
-        warn(f"[경고] 모듈마다 R·L 이 다름(R {[v for v, _ in rc]}, L {[v for v, _ in lc]}) — MODULEPARAM 은 {R0}/{L0} 로 기록")
+        warn(f"[경고] 모듈마다 R·L 이 다름(R {[v for v, _ in rc]}, L {[v for v, _ in lc]}) - MODULEPARAM 은 {R0}/{L0} 로 기록")
     if len(ac) > 1:
-        warn(f"[경고] 모듈마다 A 가 다름 {[v for v, _ in ac]} — MODULEPARAM A={A0}")
+        warn(f"[경고] 모듈마다 A 가 다름 {[v for v, _ in ac]} - MODULEPARAM A={A0}")
     if len(wc) > 2:
-        warn(f"[경고] 폭 종류가 {len(wc)}개 {[v for v, _ in wc]} — W1/W2 는 가장 많은 두 폭 {W1}/{W2}, 나머지 폭 모듈은 LayoutEditor 에서 재현 안 됨")
+        warn(f"[경고] 폭 종류가 {len(wc)}개 {[v for v, _ in wc]} - W1/W2 는 가장 많은 두 폭 {W1}/{W2}, 나머지 폭 모듈은 LayoutEditor 에서 재현 안 됨")
 
     def margin(s: TSlot) -> float:
         return M2 if s.m2 else M1
@@ -475,7 +475,7 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
         mA.links[iA] = f"{mB.id}-{iB + 1}"
         mB.links[iB] = f"{mA.id}-{iA + 1}"
 
-    # 4) 경로 진행 방향(모듈 안) — probe 위치의 도면 엣지 방향
+    # 4) 경로 진행 방향(모듈 안) - probe 위치의 도면 엣지 방향
     def path_forward(p: TPath) -> Optional[bool]:
         best = min(unified_edges, key=lambda e: _edge_dist(e, p.probe), default=None)
         if best is None or _edge_dist(best, p.probe) > 50.0:
@@ -495,7 +495,7 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
         okA = (iA + 1) in MERGEABLE.get(mA.type, set())
         okB = (iB + 1) in MERGEABLE.get(mB.type, set())
         if not (okA and okB):
-            warn(f"[경고] 모듈 {mA.id} 슬롯{iA + 1} ↔ {mB.id} 슬롯{iB + 1} 마진 겹침(간격 {g:.0f} < {need:.0f}) — "
+            warn(f"[경고] 모듈 {mA.id} 슬롯{iA + 1} ↔ {mB.id} 슬롯{iB + 1} 마진 겹침(간격 {g:.0f} < {need:.0f}) - "
                  f"90° 곡선 끝이 아니라 규칙 미정. NODE 를 그대로 둠")
             plain_conn.append(c)
             continue
@@ -536,7 +536,7 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
                 continue
             fw = path_forward(p)
             if fw is None:
-                warn(f"[경고] 모듈 {m.id} 슬롯{p.a}-{p.b} 경로의 진행 방향을 도면에서 찾지 못함 — 슬롯 번호 순으로 기록")
+                warn(f"[경고] 모듈 {m.id} 슬롯{p.a}-{p.b} 경로의 진행 방향을 도면에서 찾지 못함 - 슬롯 번호 순으로 기록")
                 fw = True
             a, b = (p.a - 1, p.b - 1) if fw else (p.b - 1, p.a - 1)
             sa, sb = m.slots[a], m.slots[b]
@@ -599,7 +599,7 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
             pnode[k] = new_node(p)
             inside = next((m for m in smods if _on_pieces(m.inst, p, tol)), None)
             if inside is not None:
-                warn(f"[경고] 모듈 {inside.id}({inside.type}) 안쪽 ({p[0]:.0f},{p[1]:.0f}) 에 슬롯이 아닌 선이 붙음 — "
+                warn(f"[경고] 모듈 {inside.id}({inside.type}) 안쪽 ({p[0]:.0f},{p[1]:.0f}) 에 슬롯이 아닌 선이 붙음 - "
                      f"모듈 종류 확인(예: 양쪽 레일이 지나가면 N)")
         return pnode[k], 0.0
 
@@ -617,7 +617,7 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
                 pnode[key(far)] = nid[(hit[0].id, hit[1])]
                 overshoot[key(far)] = m_ - ln
                 used_piece.add(k)
-                warn(f"[경고] 모듈 {hit[0].id} 슬롯{hit[1] + 1} 이격 {m_:.0f} 이 붙은 직선({ln:.0f})보다 김 — "
+                warn(f"[경고] 모듈 {hit[0].id} 슬롯{hit[1] + 1} 이격 {m_:.0f} 이 붙은 직선({ln:.0f})보다 김 - "
                      f"슬롯 NODE 를 다음 형상 시작점으로 합치고 남은 {m_ - ln:.0f} 은 다음 링크에서 뺌")
                 break
 

@@ -58,6 +58,10 @@ def _dedup_port_nodes(nodes):
 
 
 # ── 파이프라인 (별도 스레드에서 실행) ──────────────────────────────────────
+class ConvertStopped(Exception):
+    """변환하지 않고 멈춘 경우(모듈 없는 도면·파라미터 없는 도면) - GUI 는 경고 창으로 알린다."""
+
+
 def run_pipeline(dxf_path: str, cfg: dict, log,
                  rail_color: int | None = None,
                  port_colors: list | None = None,
@@ -87,6 +91,16 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     # 분기 판정 방식: CAD 에 플러그인 기본 모듈이 있으면 모듈 정보로 판정(형상 추정 안 함)
     _modules, _mmsg = decide_modules(doc, cfg)
     log(_mmsg)
+    # 모듈 도면만 변환한다. 마진(M1·M2)은 CAD 에서 정해 도면에 저장된 값만 쓴다(config 값 없음)
+    if _modules is None:
+        raise ConvertStopped("모듈이 없는 도면입니다.\n"
+                             "플러그인 Module 탭의 모듈로 그린 도면만 변환합니다. MAP 을 만들지 않았습니다.")
+    _dparam = module_map.read_drawing_param(doc)
+    if _dparam is None:
+        raise ConvertStopped("도면에 모듈 파라미터(마진 M1·M2)가 저장돼 있지 않습니다.\n"
+                             "CAD 플러그인 Module 탭 [파라미터 설정]에서 저장한 뒤 다시 변환하세요. "
+                             "MAP 을 만들지 않았습니다.")
+    log("도면 파라미터: R/L/W1/W2/A/M1/M2 = " + "/".join(f"{v:g}" for v in _dparam))
     _rl = rail_layers if rail_layers else None
     if rail_color is not None:
         log(f"레일 색상 필터링 중... (색상 {rail_color})")
@@ -119,7 +133,7 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         if DIRECTION.upper() == "CW":
             for e in unified_edges:
                 e.reverse()
-        res = module_map.build(_modules, unified_edges, cfg, log)
+        res = module_map.build(_modules, unified_edges, cfg, (_dparam[5], _dparam[6]), log)
         nodes, links = res.nodes, res.links
         _extra = _dedup_port_nodes(
             collect_port_nodes_by_color(doc, port_colors or [])
@@ -462,10 +476,10 @@ class App(tk.Tk):
         ttk.Button(bar, text="고급 설정", command=self._open_adv).pack(
             side="right", padx=(0, 8))
         ttk.Label(bar, style="BarMuted.TLabel",
-                  text="산출물   ori_<이름>.map  +  <이름>.map").pack(side="left", pady=8)
+                  text="산출물   <이름>.map  (모듈 도면만)").pack(side="left", pady=8)
 
-        self._banner(parent, "DXF 도면", "MAP 2개",
-                     "도면의 선·호를 읽어 주행 그래프를 만듭니다")
+        self._banner(parent, "DXF 도면", "MAP",
+                     "모듈 정보와 도면에 저장된 마진으로 주행 그래프를 만듭니다")
 
         body = self._card(parent, "① 입력 DXF")
         self.dxf_var = tk.StringVar(value=self._default_dxf())
@@ -535,24 +549,7 @@ class App(tk.Tk):
                 ("snap_decimals",          "좌표 소수점 자릿수"),
                 ("short_straight_threshold","짧은 직선 기준 (mm)"),
             ]),
-            ("branch_detection", [
-                ("n_branch_min_arc_sweep_deg",    "N분기 최소 호 스윕각 (도)"),
-                ("n_branch_diagonal_axis_tol_deg","N분기 대각선 판별 (도)"),
-                ("scale_to_mm",                   "단위→mm 배율"),
-            ]),
-            ("clearance_nodes", [
-                ("j1_downstream",        "J1 이동 거리 (mm)"),
-                ("j3_arc_len",           "J3 이동 거리 (mm)"),
-                ("lr_j2_upstream",       "L/R J2 거리 (mm)"),
-                ("n_long_j2",            "N분기 J2 Long (mm)"),
-                ("n_short_j2",           "N분기 J2 Short (mm)"),
-                ("n_straight_threshold", "N분기 Long/Short 기준 (mm)"),
-                ("u_j1",                 "U분기 J1 거리 (mm)"),
-                ("small_x_j1",          "소형복합분기 J1 (mm)"),
-                ("complex_lr_j1",       "복합분기 J1 (mm)"),
-                ("complex_lr_point_a_x","복합분기 Point A 기준 X (mm)"),
-                ("complex_lr_point_b2_x","복합분기 Point B2 기준 X (mm)"),
-            ]),
+            # 분기 판정·대기 노드(branch_detection / clearance_nodes)는 형상 판정 전용 - 모듈 도면만 변환하므로 뺌
             ("driving_nodes", [
                 ("min_length",  "주행노드 삽입 최소 링크 길이 (mm)"),
                 ("min_segment", "주행노드 최소 구간 길이 (mm)"),
@@ -911,6 +908,9 @@ class App(tk.Tk):
                 _ori = Path(dxf).with_name("ori_" + Path(dxf).stem + ".map")
                 if _ori.exists():
                     self.after(0, self.map_var.set, str(_ori))
+            except ConvertStopped as e:
+                self.after(0, self._log, f"[중단] {e}")
+                self.after(0, lambda m=str(e): messagebox.showwarning("변환하지 않음", m))
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._log, f"[오류] {e}\n{tb}")

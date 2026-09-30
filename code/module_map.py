@@ -29,8 +29,6 @@ Pt = Tuple[float, float]
 
 DEFAULTS = {
     "enabled": True,
-    "margin_m1": 150.0,
-    "margin_m2": 520.0,
     "through_extra_mm": 180.0,
     "slot_tol_mm": 5.0,
 }
@@ -49,6 +47,22 @@ FAMILY = {
 USES_W = {"U", "DB", "UBL", "UBR", "NL", "NR", "BPL", "BPR", "SL", "SR"}
 # 마진이 겹칠 때 U/N 한 링크로 합칠 수 있는 슬롯(90° 곡선 끝) - 가이드 5장
 MERGEABLE = {"C": {1, 2}, "Y": {2, 3}, "BL": {2}, "BR": {2}}
+
+
+# 플러그인이 도면(NOD)에 저장하는 파라미터 XRecord - Real(40) 7개 R/L/W1/W2/A/M1/M2
+PARAM_KEY = "RAILPLUGIN_MODULEPARAM"
+
+
+def read_drawing_param(doc) -> Optional[Tuple[float, ...]]:
+    """도면에 저장된 모듈 파라미터 (R, L, W1, W2, A, M1, M2). 없거나 값이 모자라면 None."""
+    try:
+        xr = doc.rootdict.get(PARAM_KEY)
+    except Exception:
+        return None
+    if xr is None or xr.dxftype() != "XRECORD":
+        return None
+    v = [float(t.value) for t in xr.tags if t.code == 40]
+    return tuple(v[:7]) if len(v) >= 7 else None
 
 
 def enabled(cfg: Optional[dict]) -> bool:
@@ -325,12 +339,13 @@ class Result:
     warnings: List[str]
 
 
-def build(modules, unified_edges, cfg: dict, log=print) -> Result:
+def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=print) -> Result:
+    """margins = (M1, M2): CAD 도면에 저장된 값만 쓴다(CAD 모듈 형상에는 반영 안 하고 MAP 에만 반영)."""
     from map_exporter import MapNode, MapLink
 
     mc = cfg_of(cfg)
     tol = float(mc["slot_tol_mm"])
-    M1, M2 = float(mc["margin_m1"]), float(mc["margin_m2"])
+    M1, M2 = float(margins[0]), float(margins[1])
     warns: List[str] = []
 
     def warn(s):
@@ -505,8 +520,12 @@ def build(modules, unified_edges, cfg: dict, log=print) -> Result:
     nodes: List[MapNode] = []
     nid = {}
 
+    def c1(v):                          # 소수 1자리, -0.0 은 0.0 으로
+        s = f"{v:.1f}"
+        return "0.0" if s == "-0.0" else s
+
     def new_node(p, mod_id="", slot=""):
-        n = MapNode(id=f"{len(nodes) + 1:06d}", type="G", reality="R", x=f"{p[0]:.1f}", y=f"{p[1]:.1f}",
+        n = MapNode(id=f"{len(nodes) + 1:06d}", type="G", reality="R", x=c1(p[0]), y=c1(p[1]),
                     relative_distance="0", layer_id="0", param_yield_enabled="")
         n.module_id, n.slot_id = mod_id, slot
         n.v2 = True

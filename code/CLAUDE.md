@@ -81,10 +81,16 @@ final `6792d1a5…`). Synthetic test drawings: `python module_testdxf.py <out_di
 
 ### MODULE FORMAT output (module_map.py) — single MAP for module drawings
 
+**Module drawings only (2026-09-30)**: `gui.run_pipeline` raises `ConvertStopped` (GUI warning box, no MAP) when the drawing
+has no plugin modules, or has no `RAILPLUGIN_MODULEPARAM` XRecord in the NOD (`module_map.read_drawing_param`). Margins M1/M2
+come **only** from that drawing XRecord (set in the plugin; not applied to CAD module shapes, only to the MAP) — there is no
+config margin. The geometric path code is kept but unreachable. GUI advanced settings no longer show branch_detection /
+clearance_nodes. LayoutEditor mail CASE 1 (C+C→U) and CASE 2 (C+BL→N) reproduce exactly (`tmp email_cases.py`).
+
 Spec: `LayoutEditorApp/LayoutEditorApp/NODE_모듈정보_기재가이드.md` + `MODULE FORMAT 제안서.pptx`. When modules are present
 and `config module_map.enabled` (default true), `gui.run_pipeline` writes **one** `<stem>.map` (no `ori_`): NODE lines in
 the extended format `…/OPSID/OPSOffset/ModuleID/SlotID/Param`, LINKs, then `MODULE/ID/Type/Angle/X/Y/slot…` lines and one
-`MODULEPARAM/R/L/W1/W2/A/M1/M2`. Module nodes = spec slot point + outward M1 (M2 for the through-top slots: BL/BR/UBL/UBR ③,
+`MODULEPARAM/R/L/W1/W2/A/M1/M2`. Module nodes = spec slot point + outward M1 (M1/M2 from the drawing XRecord) (M2 for the through-top slots: BL/BR/UBL/UBR ③,
 DB ③④); links run slot-to-slot (inside modules: S / 90° L·R / arch U / cross N; between modules: S of `g − margins`). Facing
 slots closer than the two margins drop both nodes and join the two 90° curves with one U/N link (only C①②, Y②③, BL②, BR②;
 other overlaps warn). Decisions (2026-09-30): slot geometry follows the **spec** (branch through-top arm = L+180 =

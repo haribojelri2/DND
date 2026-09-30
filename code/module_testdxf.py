@@ -99,7 +99,13 @@ class Lay:
         pm.h = mj.cross_rise(r, w, a) if mj.DEFS[idx][2] else 0.0
         return pm
 
+    # 플러그인 [파라미터 설정]과 같은 도면 파라미터(R/L/W1/W2/A/M1/M2). None 이면 저장 안 함
+    param = (450.0, 200.0, 600.0, 900.0, 45.0, 150.0, 520.0)
+
     def save(self, path):
+        if self.param is not None and "RAILPLUGIN_MODULEPARAM" not in self.doc.rootdict:
+            xr = self.doc.rootdict.add_xrecord("RAILPLUGIN_MODULEPARAM")
+            xr.extend([(40, float(v)) for v in self.param])
         self.doc.saveas(path)
 
 

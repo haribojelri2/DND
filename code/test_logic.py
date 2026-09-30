@@ -90,6 +90,9 @@ if _modules is not None:
     mjudge.bind(unified_edges)      # 모듈 ↔ 엣지 대응(위치 대조). 이후 단계는 같은 엣지 객체를 따라간다
 
 import module_map
+if _modules is None or module_map.read_drawing_param(doc) is None:
+    print("[중단] 모듈이 없거나 도면에 모듈 파라미터(M1·M2)가 없습니다 - MAP 을 만들지 않았습니다.")
+    sys.exit(1)
 if mjudge is not None and module_map.enabled(_cfg):
     # MODULE FORMAT(이격 기준 MAP 하나) — gui.run_pipeline 과 같은 경로를 그대로 쓴다
     import gui

@@ -573,7 +573,21 @@ namespace RailPlugin
         }
 
         // ── 배치 ──────────────────────────────────────────────────────────────
-        // 파라미터로 배치 (리본 모듈 버튼). 폭을 쓰는 모듈은 W1/W2 를 고른다.
+        // 폭을 쓰는 모듈이 배치될 폭 — 리본 [폭 W1/W2] 버튼으로 전환 (묻지 않음).
+        public static bool UseW2;
+
+        // 리본 [폭] 버튼: W1 ↔ W2 전환.
+        [CommandMethod("RAILMODW")]
+        public void RailModW()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            UseW2 = !UseW2;
+            ModuleRibbon.RefreshParam();
+            var p = ModuleParams.Get(doc.Database);
+            doc.Editor.WriteMessage($"\nRAILMODW: 폭 {(UseW2 ? "W2" : "W1")}({ModuleParams.F(UseW2 ? p.W2 : p.W1)}) 로 배치합니다.");
+        }
+
+        // 파라미터로 배치 (리본 모듈 버튼). 폭을 쓰는 모듈은 리본에서 고른 W1/W2 로 바로 배치.
         [CommandMethod("RAILMOD")]
         public void RailMod()
         {
@@ -583,15 +597,7 @@ namespace RailPlugin
             if (mi < 0 || mi >= ModuleGeom.Defs.Length) { mi = AskModule(ed, "모듈 번호"); if (mi < 0) return; }
             var def = ModuleGeom.Defs[mi];
             var p = ModuleParams.Get(db);
-            double w = p.W1;
-            if (def.UsesW)
-            {
-                var pko = new PromptKeywordOptions($"\n폭 [W1({ModuleParams.F(p.W1)})/W2({ModuleParams.F(p.W2)})] <W1>: ");
-                pko.Keywords.Add("W1"); pko.Keywords.Add("W2"); pko.Keywords.Default = "W1"; pko.AllowNone = true;
-                var kr = ed.GetKeywords(pko);
-                if (kr.Status == PromptStatus.Cancel) return;
-                if (kr.Status == PromptStatus.OK && kr.StringResult == "W2") w = p.W2;
-            }
+            double w = UseW2 ? p.W2 : p.W1;
             ed.WriteMessage($"\n{def.Name}: R{ModuleParams.F(p.R)} L{ModuleParams.F(p.L)}"
                             + (def.UsesW ? $" W{ModuleParams.F(w)}" : "") + (def.UsesA ? $" A{ModuleParams.F(p.A)}" : ""));
             PromptPointResult p0 = ed.GetPoint($"\n{def.Name} 접속 위치(기존 끝점에 자동으로 붙습니다): ");
@@ -896,6 +902,7 @@ namespace RailPlugin
         const string TAB_ID = "RAILPLUGIN_MODULE_TAB";
 
         static Autodesk.Windows.RibbonLabel _paramLabel;
+        static Autodesk.Windows.RibbonButton _widthButton;
         static bool _hooked;
 
         public static void Ensure()
@@ -916,6 +923,9 @@ namespace RailPlugin
                     "선·호 도면(또는 모듈 도면)을 분석해 R·W1·W2·A 를 뽑아 파라미터로 적용합니다"));
                 srcP.Items.Add(MakeCmdButton("도면 모듈에\n일괄 적용", "RAILMODAPPLY",
                     "도면에 이미 그린 모듈을 현재 파라미터로 다시 만듭니다(선택 / Enter = 전체)"));
+                _widthButton = MakeCmdButton("폭\nW1", "RAILMODW",
+                    "폭을 쓰는 모듈(U, DOUBLE BRANCH, U BRANCH, N, BY PASS, S)을 W1 / W2 중 어느 폭으로 배치할지 전환합니다. 배치할 때는 묻지 않습니다");
+                srcP.Items.Add(_widthButton);
                 _paramLabel = new Autodesk.Windows.RibbonLabel { Text = "" };
                 srcP.Items.Add(new Autodesk.Windows.RibbonRowBreak());
                 srcP.Items.Add(_paramLabel);
@@ -959,6 +969,16 @@ namespace RailPlugin
                 if (_paramLabel == null) return;
                 Document doc = Application.DocumentManager.MdiActiveDocument;
                 _paramLabel.Text = doc == null ? "" : "현재: " + ModuleParams.Get(doc.Database).Digest();
+                if (_widthButton != null)
+                {
+                    string wk = ModuleCommands.UseW2 ? "W2" : "W1";
+                    if (doc == null) _widthButton.Text = "폭\n" + wk;
+                    else
+                    {
+                        var p = ModuleParams.Get(doc.Database);
+                        _widthButton.Text = "폭 " + wk + "\n" + ModuleParams.F(ModuleCommands.UseW2 ? p.W2 : p.W1);
+                    }
+                }
             }
             catch { }
         }
@@ -974,6 +994,7 @@ namespace RailPlugin
                     if (t.Id == TAB_ID) { found = t; break; }
                 if (found != null) rc.Tabs.Remove(found);
                 _paramLabel = null;
+                _widthButton = null;
             }
             catch { }
         }
@@ -981,7 +1002,7 @@ namespace RailPlugin
         static Autodesk.Windows.RibbonButton MakeModuleButton(int mi)
         {
             var def = ModuleGeom.Defs[mi];
-            string uses = "R, L" + (def.UsesW ? ", W1/W2" : "") + (def.UsesA ? ", A" : "");
+            string uses = "R, L" + (def.UsesW ? ", 폭(리본에서 고른 W1/W2)" : "") + (def.UsesA ? ", A" : "");
             var b = new Autodesk.Windows.RibbonButton
             {
                 Text = def.Label,

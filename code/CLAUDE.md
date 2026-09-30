@@ -96,7 +96,7 @@ rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/
 ### Plugin Module tab (RailPlugin/ModuleCommands.cs) — one parameter set per drawing
 
 R/L/W1/W2/A/M1/M2 stored in the drawing's NOD XRecord `RAILPLUGIN_MODULEPARAM` (= MODULEPARAM). Commands: RAILMODPARAM(P) set,
-RAILMOD place with it (W-modules pick W1/W2), RAILMODAPPLY re-make existing modules, RAILMODEXTRACT(P) derive R/W1/W2/A from
+RAILMOD place with it (W-modules use the ribbon W1/W2 toggle RAILMODW, no prompt), RAILMODAPPLY re-make existing modules, RAILMODEXTRACT(P) derive R/W1/W2/A from
 modules or plain lines/arcs (L, M1, M2 kept). `ModuleGeom.EnsureBlock` refills a same-named block whose shape differs.
 Headless check: RAILMODPARAMTEST via accoreconsole.
 

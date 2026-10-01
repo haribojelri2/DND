@@ -101,6 +101,14 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
                              "CAD 플러그인 Module 탭 [파라미터 설정]에서 저장한 뒤 다시 변환하세요. "
                              "MAP 을 만들지 않았습니다.")
     log("도면 파라미터: R/L/W1/W2/A/M1/M2 = " + "/".join(f"{v:g}" for v in _dparam))
+    if module_map.enabled(cfg):
+        # 모듈 형상은 좌표가 정확하다 - 100mm 스냅을 쓰면 L 이 100 보다 짧은 모듈 다리(예: L 50)가 한 점으로 뭉개져
+        #  갈림점·슬롯이 엉키고 이어진 선이 끊긴다. 모듈 도면은 작은 허용 오차로 정리한다.
+        #  허용 오차 = 모듈 다리 L 의 0.4 배(20~100mm) — L 200 이면 80, L 50 이면 20. config geom_tol_mm 를 주면 그 값.
+        _gt = module_map.cfg_of(cfg).get("geom_tol_mm")
+        _gt = float(_gt) if _gt not in (None, "", "auto") else max(20.0, 0.4 * float(_dparam[1]))
+        SNAP_TOL = INTER_MERGE_TOL = min(SNAP_TOL, _gt)
+        log(f"모듈 도면 선·호 정리 허용 오차 {SNAP_TOL:g}mm (L {_dparam[1]:g})")
     _rl = rail_layers if rail_layers else None
     if rail_color is not None:
         log(f"레일 색상 필터링 중... (색상 {rail_color})")
@@ -113,13 +121,13 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     if port_colors:
         log(f"포트 색상 필터링 중... (색상 {port_colors})")
     build_edges_raw_no_split_no_unify(lines, arcs)
-    split_lines, arcs, _ = split_edges_at_intersections(lines, arcs)
+    split_lines, arcs, _ = split_edges_at_intersections(lines, arcs, merge_tol=INTER_MERGE_TOL)
     glue_arc_endpoints_to_lines(split_lines, arcs, tol=max(SNAP_TOL, INTER_MERGE_TOL))
     snap_segments(split_lines, arcs, tol=SNAP_TOL)
     reproject_arcs_to_circle(arcs)
     split_lines = merge_line_segments_at_degree2_nodes(split_lines, arcs, tol=SNAP_TOL)
     all_segments = split_lines + arcs
-    all_segments = clean_edges(all_segments)
+    all_segments = clean_edges(all_segments, tolerance=INTER_MERGE_TOL)
     unified_edges = unify_edge_directions(all_segments, tolerance=INTER_MERGE_TOL, start_direction="CCW")
     mjudge = None
     if _modules is not None:

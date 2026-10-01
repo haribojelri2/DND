@@ -157,7 +157,16 @@ class Graph:
         return (int(round(p[0] / self.tol)), int(round(p[1] / self.tol)))
 
     def at(self, p: Pt) -> List[Tuple[int, int]]:
-        return self.nodes.get(self.key(p), [])
+        """p 에서 tol 안에 있는 끝점들. 격자 칸 경계에 걸린 점이 옆 칸으로 빠지지 않게 주변 칸까지 거리로 본다."""
+        kx, ky = self.key(p)
+        out = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for i, e in self.nodes.get((kx + dx, ky + dy), ()):
+                    q = self.segs[i].p0 if e == 0 else self.segs[i].p1
+                    if dist(q, p) <= self.tol:
+                        out.append((i, e))
+        return out
 
     def deg(self, p: Pt) -> int:
         """p 에 모이는 가지 수. 끝점뿐 아니라 p 를 끊기지 않고 지나가는 직선도 두 가지로 센다
@@ -487,6 +496,7 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         # 모듈 블록 안의 선·호는 레이어 0 이라 삽입 레이어의 색을 따라간다
         lay.doc.layers.add(module_layer, color=module_color or 3)
     placed, skipped = [], []
+    mod_ends: List[Pt] = []
 
     def recognized(alt) -> str:
         """단계 인식: 파라미터(R·W·A)가 맞는가. 안 맞으면 이유."""
@@ -517,6 +527,8 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         anc = cd.anchor({"r": r, "l": l, "w": w, "a": a,
                          "h": mj.cross_rise(r, w, a) if mj.DEFS[idx][2] else 0.0})
         lay.place(cd.name, anc, cd.at, cd.heading, False, R=r, L=l, W=w, A=a)
+        for _k, p0, p1, _c, _r in place_pieces(cd.name, cd.at, cd.anchor, cd.heading, r, l, w, a)[0]:
+            mod_ends.extend((p0, p1))
         ref = list(lay.msp)[-1]
         ref.dxf.layer = module_layer or segs[cd.segs[0]].layer   # 모듈 레이어(색) 또는 원래 레이어
         if module_color:
@@ -564,6 +576,8 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     if plain_color:
         plain_attr["color"] = plain_color
     left_lines = left_arcs = 0
+    plain: List[List[Pt]] = []          # 남길 직선 [시작, 끝]
+    other_ends: List[Pt] = list(mod_ends)
     for s in segs:
         if s.kind == "ARC":
             if not s.used:
@@ -571,6 +585,7 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
                 if s.sweep < 0:
                     a0, a1 = a1, a0
                 lay.msp.add_arc(s.c, s.r, a0, a1, dxfattribs=plain_attr)
+                other_ends.extend((s.p0, s.p1))
                 left_arcs += 1
             continue
         d, L = s.dir(), s.length
@@ -584,9 +599,52 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
         t = 0.0
         for lo, hi in merged + [[L, L]]:
             if lo - t > tol:
-                lay.msp.add_line(add(s.p0, mul(d, t)), add(s.p0, mul(d, lo)), dxfattribs=plain_attr)
-                left_lines += 1
+                plain.append([add(s.p0, mul(d, t)), add(s.p0, mul(d, lo))])
             t = max(t, hi)
+
+    # 일직선으로 이어진 흰 직선 조각은 하나로 합친다 — 원래 도면(MAP 되돌림)의 잘게 끊긴 점 때문에
+    #  모듈 끝과 다음 끊긴 점 사이에 짧은 자투리(예: L 50 이면 50mm)가 남아 CAD→MAP 정리 단계에서 지워지면 끊김이 생긴다.
+    #  다른 선·호·모듈 끝이 붙지 않은 점(흰 직선 두 개만 만나는 점)에서만 합친다.
+    cell = max(tol, 1.0)
+    occ: Dict[Tuple[int, int], List[Pt]] = {}
+    for q in other_ends:
+        occ.setdefault((int(q[0] // cell), int(q[1] // cell)), []).append(q)
+
+    def touched(p: Pt) -> bool:
+        cx, cy = int(p[0] // cell), int(p[1] // cell)
+        return any(dist(p, q) <= tol for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                   for q in occ.get((cx + dx, cy + dy), ()))
+
+    def pkey(p: Pt):
+        return (round(p[0], 3), round(p[1], 3))
+
+    alive = [True] * len(plain)
+    at: Dict[Tuple[float, float], List[int]] = {}
+    for k, (p, q) in enumerate(plain):
+        at.setdefault(pkey(p), []).append(k)
+        at.setdefault(pkey(q), []).append(k)
+    changed = True
+    while changed:
+        changed = False
+        for pk in list(at.keys()):
+            ks = [k for k in at.get(pk, []) if alive[k]]
+            if len(ks) != 2 or ks[0] == ks[1] or touched(pk):
+                continue
+            k1, k2 = ks
+            a1 = plain[k1][1] if pkey(plain[k1][0]) == pk else plain[k1][0]     # k1 의 먼 끝
+            a2 = plain[k2][1] if pkey(plain[k2][0]) == pk else plain[k2][0]
+            u1, u2 = unit(sub(pk, a1)), unit(sub(a2, pk))
+            if dot(u1, u2) < 0.99999:                                            # 일직선이 아니면 그대로
+                continue
+            plain[k1] = [a1, a2]
+            alive[k2] = False
+            at[pkey(a2)] = [k1 if k == k2 else k for k in at.get(pkey(a2), [])]
+            at[pk] = []
+            changed = True
+    for k, (p, q) in enumerate(plain):
+        if alive[k]:
+            lay.msp.add_line(p, q, dxfattribs=plain_attr)
+            left_lines += 1
 
     lay.save(out_path)
     return {"modules": placed, "skipped": skipped, "left_lines": left_lines, "left_arcs": left_arcs,

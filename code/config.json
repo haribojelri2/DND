@@ -96,11 +96,13 @@
   "module_map": {
     "enabled": true,
     "through_extra_mm": 180.0,
-    "slot_tol_mm": 20.0
+    "slot_tol_mm": 20.0,
+    "geom_tol_mm": "auto"
   },
   "module_map_comments": {
     "enabled": "모듈이 있는 도면을 MODULE FORMAT(LayoutEditor) MAP 하나로 출력. false 면 기존 방식(원본+이격 MAP 두 개)",
     "through_extra_mm": "제안서 분기류 관통 위쪽 팔 = L + 이 값(플러그인 블록보다 긴 만큼)",
-    "slot_tol_mm": "모듈 슬롯 위치 대조 허용 오차(mm)"
+    "slot_tol_mm": "모듈 슬롯 위치 대조 허용 오차(mm)",
+    "geom_tol_mm": "모듈 도면 선·호 정리(스냅·병합) 허용 오차(mm). auto = 모듈 다리 L 의 0.4 배(20~100) - 짧은 모듈 다리(L<100)가 뭉개지지 않게"
   }
 }

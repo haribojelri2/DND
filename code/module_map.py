@@ -31,6 +31,7 @@ DEFAULTS = {
     "enabled": True,
     "through_extra_mm": 180.0,
     "slot_tol_mm": 20.0,
+    "geom_tol_mm": "auto",
 }
 
 # 플러그인 모듈 이름 → 제안서 약어 후보(좌우는 형상으로 다시 가린다)
@@ -593,6 +594,13 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
     for mA, iA, mB, iB, g, chain, fw in plain_conn:
         ln = g - margin(mA.slots[iA]) - margin(mB.slots[iB])
         a, b = (mA, iA), (mB, iB)
+        if ln <= 0:
+            # 마진이 겹친(규칙 미정) 연결은 사이 직선이 모듈 안으로 들어가 있어 방향이 불확실 → 모듈 흐름 우선
+            ex = exits_at(mA, iA)
+            if ex is None and exits_at(mB, iB) is not None:
+                ex = not exits_at(mB, iB)
+            if ex is not None:
+                fw = ex
         if fw is None:                                   # 사이 직선이 없음 → 모듈 흐름으로 방향
             ex = exits_at(mA, iA)
             fw = ex if ex is not None else (not exits_at(mB, iB) if exits_at(mB, iB) is not None else True)

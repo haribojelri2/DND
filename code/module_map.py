@@ -195,31 +195,46 @@ class SMod:
 
 def _free_ends(inst, tol) -> List[Tuple[Pt, Pt]]:
     """플러그인 블록 조각의 열린 끝점과 그 끝의 바깥 방향."""
-    pcs = inst.pieces
+    #  열린 끝 = 그 점에서 바깥쪽으로 이어지는 조각이 없는 끝. 다른 조각이 닿아 있어도 모두 모듈 안쪽으로 가면
+    #  열린 끝이다 — L = 0 이면 BRANCH 관통선 시작점(슬롯①)에서 곡선도 바로 시작해, '닿으면 내부'로 보면 슬롯이 사라진다.
+    #  길이 0 조각(L = 0 의 다리)은 무시한다.
+    pcs = [q for q in inst.pieces if q.kind != "LINE" or dist(q.a, q.b) > tol]
+
+    def outward(p, pt, other):
+        """조각 p 의 끝 pt 에서 조각 몸통 반대쪽(바깥) 방향."""
+        if p.kind == "LINE":
+            return unit(sub(pt, other))
+        rad = unit(sub(pt, p.c))
+        tan = (-rad[1], rad[0])
+        return tan if dot(tan, sub(pt, other)) > 0 else mul(tan, -1)
+
     ends = []
     for i, p in enumerate(pcs):
         for pt, other in ((p.a, p.b), (p.b, p.a)):
-            on_other = False
+            out = outward(p, pt, other)
+            cont = False                     # pt 에서 바깥쪽으로 이어지는 다른 조각이 있나
             for j, q in enumerate(pcs):
                 if j == i:
                     continue
                 if q.kind == "LINE":
                     d = unit(sub(q.b, q.a))
                     t = dot(sub(pt, q.a), d)
-                    if -tol <= t <= dist(q.a, q.b) + tol and abs(cross(d, sub(pt, q.a))) <= tol:
-                        on_other = True
-                        break
+                    if abs(cross(d, sub(pt, q.a))) > tol or not (-tol <= t <= dist(q.a, q.b) + tol):
+                        continue
+                    if tol < t < dist(q.a, q.b) - tol:          # 직선 중간을 지나감 → 양쪽으로 이어짐
+                        cont = True
+                    else:
+                        far = q.b if t <= tol else q.a
+                        cont = dot(unit(sub(far, pt)), out) > 0.5
                 elif dist(pt, q.a) <= tol or dist(pt, q.b) <= tol:
-                    on_other = True
+                    qo = outward(q, *((q.a, q.b) if dist(pt, q.a) <= tol else (q.b, q.a)))
+                    cont = dot(mul(qo, -1.0), out) > 0.5            # q 몸통이 바깥쪽으로 뻗음
+                if cont:
                     break
-            if on_other:
+            if cont:
                 continue
-            if p.kind == "LINE":
-                out = unit(sub(pt, other))
-            else:
-                rad = unit(sub(pt, p.c))
-                tan = (-rad[1], rad[0])
-                out = tan if dot(tan, sub(pt, other)) > 0 else mul(tan, -1)
+            if any(dist(pt, e) <= tol and dot(o, out) > 0.9 for e, o in ends):
+                continue                                             # 같은 슬롯(관통선·곡선이 함께 시작)
             ends.append((pt, out))
     return ends
 

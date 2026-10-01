@@ -641,8 +641,35 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
             at[pkey(a2)] = [k1 if k == k2 else k for k in at.get(pkey(a2), [])]
             at[pk] = []
             changed = True
+    # 흰 직선 끝을 tol 안의 모듈 끝·흰 호 끝에 정확히 붙인다 — 모듈은 파라미터 치수로 정확히 그려지고 흰 선은
+    #  원래 좌표라, MAP 되돌림 도면처럼 원래 좌표가 4~7mm 어긋나 있으면 CAD 에서 선이 끊겨 보인다.
+    #  흰 직선끼리 tol 안에서 어긋난 끝도 먼저 놓인 끝에 붙인다.
+    anchors: Dict[Tuple[int, int], List[Pt]] = {}
+
+    def add_anchor(q: Pt):
+        anchors.setdefault((int(q[0] // cell), int(q[1] // cell)), []).append(q)
+
+    def snap_to(p: Pt) -> Pt:
+        cx, cy = int(p[0] // cell), int(p[1] // cell)
+        best, bd = None, tol
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for q in anchors.get((cx + dx, cy + dy), ()):
+                    d = dist(p, q)
+                    if d <= bd:
+                        best, bd = q, d
+        return best if best is not None else p
+
+    for q in other_ends:
+        add_anchor(q)
+    for k in range(len(plain)):
+        if not alive[k]:
+            continue
+        for e in (0, 1):
+            plain[k][e] = snap_to(plain[k][e])
+            add_anchor(plain[k][e])
     for k, (p, q) in enumerate(plain):
-        if alive[k]:
+        if alive[k] and dist(p, q) > tol:
             lay.msp.add_line(p, q, dxfattribs=plain_attr)
             left_lines += 1
 

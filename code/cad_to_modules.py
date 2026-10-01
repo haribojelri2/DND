@@ -255,7 +255,8 @@ def single_ladder(g: Graph, i: int, ang_tol: float) -> Optional[List[Cand]]:
     for J, B in ends:
         if g.deg(J) < 2:
             continue
-        if not [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]:
+        # 레일이 붙어 있어야 한다: 끝점이 닿은 직선, 또는 J 를 끊기지 않고 지나가는 직선(차수 3 이상)
+        if g.deg(J) < 3 and not [k for k in g.others(J, [i]) if segs[k].kind == "LINE"]:
             continue
         # 레일 방향 = 호가 접합점에서 뻗는 방향(호는 레일에 접한다). 붙은 직선은 조금 기울어 있을 수 있어 쓰지 않는다.
         u_lane = s.tangent_at(J)

@@ -101,8 +101,9 @@ rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/
 
 ### MODULE FORMAT → CAD (module_to_cad.py) — reverse conversion
 
-`map_to_cad.map_to_dxf` hands any map with `MODULE/` records to `module_to_cad.module_map_to_dxf` (GUI MAP→CAD and
-`DXFtoMAP.exe --map2cad` included). Each MODULE record is re-placed as the plugin block whose forward match
+`map_to_cad.map_to_dxf` (GUI MAP→CAD and `DXFtoMAP.exe --map2cad`) restores **only** module-format maps via
+`module_to_cad.module_map_to_dxf`; a map without `MODULE/` records raises `NotModuleMap` (no DXF) — the old
+line/arc-only restore was removed (2026-10-05), `reconstruct` is kept for the non-module parts. Each MODULE record is re-placed as the plugin block whose forward match
 (`module_map.match_module`) gives the same type/angle/reference point (plugin names × 4 rotations tried); W is W1/W2
 chosen by the module's NODE positions (slot + margin). Slot connections ("ID-n") become slot-to-slot lines; links
 touching non-module nodes are rebuilt with `map_to_cad.reconstruct`, plus the margin piece slot → node. The result

@@ -19,7 +19,7 @@ from map_exporter import (export_map_from_unified_edges,
 from port_extractor import extract_stb_ports, collect_port_nodes_by_color, collect_port_nodes_by_layer
 from part_counter import (count_parts, count_geometry, save_parts_csv,
                           summary_text, table_lines)
-from map_to_cad import map_to_dxf
+from map_to_cad import map_to_dxf, NotModuleMap
 from module_judge import ModuleJudge, decide_modules
 import module_map
 # 최종 맵 역변환(final_to_cad)은 형상 복원 방식이 달라 GUI 에서 뺐다 — CLI 로만 사용
@@ -534,18 +534,15 @@ class App(tk.Tk):
         ttk.Label(bar, style="BarMuted.TLabel",
                   text="산출물   <이름>_fromMap.dxf").pack(side="left", pady=8)
 
-        self._banner(parent, "ori_*.map", "DXF 도면",
-                     "맵의 노드·링크를 선과 호로 되돌립니다 (레이어·블록·장비는 복원 안 됨)")
+        self._banner(parent, "모듈 MAP", "DXF 도면",
+                     "MAP 의 모듈 정보로 모듈 블록을 다시 놓고, 모듈 밖 선·호를 되돌립니다")
 
-        # clearance 이전 스냅샷이라 곡선이 순수한 호 → 현과 길이만으로 형상이 풀린다.
-        # (최종 맵은 곡선이 양옆 직선을 흡수한 복합 형상이라 별도 처리가 필요 — final_to_cad.py)
-        body = self._card(parent, "① 입력 MAP", "clearance 이전 스냅샷인 ori_*.map 을 넣으세요")
+        body = self._card(parent, "① 입력 MAP", "CAD→MAP 으로 만든 모듈 형식 MAP 을 넣으세요")
         self.map_var = tk.StringVar(value="")
         ttk.Entry(body, textvariable=self.map_var).pack(side="left", fill="x", expand=True)
         ttk.Button(body, text="찾아보기", command=self._browse_map).pack(side="left", padx=(8, 0))
 
-        # 표준 호 반지름 R 은 고급 설정(rail_arc_radius_mm)을 그대로 쓴다.
-        # 포트 마커는 레일 위 동그라미로 보여 혼동되기 쉬워 그리지 않는다.
+        # 반지름·파라미터는 MAP 의 MODULEPARAM 을 쓴다.
 
     # ── 고급 설정 (별도 창) ───────────────────────────────────────────────
     #  StringVar 는 창을 닫아도 살아 있으므로, 변수는 시작할 때 한 번 만들고
@@ -811,9 +808,9 @@ class App(tk.Tk):
             self._suggest_map(path)
 
     def _suggest_map(self, dxf_path: str):
-        """DXF 옆에 ori_*.map 이 있으면 역변환 입력으로 미리 채운다."""
+        """DXF 옆에 같은 이름의 모듈 MAP 이 있으면 역변환 입력으로 미리 채운다."""
         p = Path(dxf_path)
-        cand = p.with_name("ori_" + p.stem + ".map")
+        cand = p.with_suffix(".map")
         if cand.exists() and not self.map_var.get().strip():
             self.map_var.set(str(cand))
 
@@ -831,28 +828,25 @@ class App(tk.Tk):
             messagebox.showerror("오류", "MAP 파일을 선택해주세요.")
             return
 
-        _bd = self.cfg.get("branch_detection", {})
-        radius = float(_bd.get("rail_arc_radius_mm", 480.0))
-        radius_tol = float(_bd.get("rail_arc_radius_tol_mm", 5.0))
-        draw_ports = False
-
         self.btn_rev.configure(state="disabled")
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
-        self._log(f"MAP → CAD 역변환 시작 — R={radius:g}mm")
+        self._log("MAP → CAD 역변환 시작 (모듈 형식 MAP)")
 
         def worker():
             import traceback
             try:
                 log = lambda m: self.after(0, self._log, m)
-                st = map_to_dxf(mp, None, radius_mm=radius, radius_tol_mm=radius_tol,
-                                draw_ports=draw_ports, log=log)
+                st = map_to_dxf(mp, None, log=log)
                 msg = (f"DXF 생성 완료\n\n{st['dxf']}\n\n"
                        + (f"모듈 {st['modules']}개 / " if "modules" in st else "")
                        + f"LINE {st['lines']}개 / ARC {st['arcs']}개\n"
                        f"경고 {len(st['warnings'])}건")
                 self.after(0, lambda: messagebox.showinfo("역변환 완료", msg))
+            except NotModuleMap as e:
+                self.after(0, self._log, f"[중단] {e}")
+                self.after(0, lambda m=str(e): messagebox.showwarning("복원하지 않음", m))
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._log, f"[오류] {e}\n{tb}")
@@ -950,7 +944,7 @@ class App(tk.Tk):
                              rail_color=rail_color, port_colors=port_colors,
                              rail_layers=rail_layers or None, port_layers=port_layers or None)
                 # 방금 만든 ori 맵을 역변환 입력으로 채워준다
-                _ori = Path(dxf).with_name("ori_" + Path(dxf).stem + ".map")
+                _ori = Path(dxf).with_suffix(".map")
                 if _ori.exists():
                     self.after(0, self.map_var.set, str(_ori))
             except ConvertStopped as e:

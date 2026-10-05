@@ -497,57 +497,31 @@ def primitives_to_dxf(prims: List[Primitive], out_path: str | Path, *,
     doc.saveas(str(out_path))
 
 
-def map_to_dxf(map_path: str | Path, dxf_path: str | Path | None = None, *,
-               radius_mm: float = 480.0, radius_tol_mm: float = 5.0,
-               layer: str = "RAIL", draw_ports: bool = True,
-               log: Callable[[str], None] = print) -> dict:
-    """`.map` → 레일 센터선 DXF. 산출 경로와 통계를 dict 로 반환.
+class NotModuleMap(ValueError):
+    """모듈 정보(MODULE 레코드)가 없는 MAP - 복원하지 않는다."""
 
-    `draw_ports=True` 면 PORT 레코드 위치마다 반지름 100 원을 `RAIL_PORT` 레이어에 그린다.
-    레일 위에 동그라미로 보이므로, 필요 없으면 False 로 두거나 CAD 에서 그 레이어를 끄면 된다.
+
+def map_to_dxf(map_path: str | Path, dxf_path: str | Path | None = None, *,
+               radius_mm: float = 450.0, radius_tol_mm: float = 5.0,
+               layer: str = "RAIL", draw_ports: bool = False,
+               log: Callable[[str], None] = print) -> dict:
+    """모듈 형식 `.map`(MODULE/MODULEPARAM 레코드) → 모듈 블록 DXF. 산출 경로와 통계를 dict 로 반환.
+
+    모듈 정보가 없는 예전 형식 MAP 은 복원하지 않는다(NotModuleMap). CAD→MAP 이 모듈 도면만 변환하는 것과 같은 규칙.
     """
+    import module_to_cad
     map_path = Path(map_path)
     if dxf_path is None:
         dxf_path = map_path.with_name(map_path.stem + "_fromMap.dxf")
-    dxf_path = Path(dxf_path)
-
-    # 모듈 형식 MAP(MODULE/MODULEPARAM 레코드)이면 모듈 단위로 되살린다
-    import module_to_cad
-    if module_to_cad.has_modules(map_path):
-        log("모듈 형식 MAP - 모듈 블록으로 복원합니다")
-        return module_to_cad.module_map_to_dxf(map_path, dxf_path, radius_mm=radius_mm, log=log)
-
-    doc = load_map(map_path)
-    log(f"MAP 읽음: NODE {len(doc.nodes)}개, LINK {len(doc.links)}개, PORT {len(doc.ports)}개")
-    if not doc.links:
-        raise ValueError("LINK 레코드가 없습니다 — .map 파일이 맞는지 확인해주세요.")
-    if map_path.name and not map_path.name.startswith("ori_"):
-        log("[주의] 최종 맵은 대기(clearance) 노드가 호 끝을 밀어놓아 반지름 복원이 어긋납니다. "
-            "ori_*.map 을 쓰는 것을 권합니다.")
-
-    prims, warns = reconstruct(doc, radius_mm=radius_mm, radius_tol_mm=radius_tol_mm)
-    n_line = sum(1 for p in prims if p[0] == "LINE")
-    n_arc = len(prims) - n_line
-    marks = doc.ports if draw_ports else []
-    primitives_to_dxf(prims, dxf_path, layer=layer, ports=marks)
-
-    for m in warns[:20]:
-        log("  " + m)
-    if len(warns) > 20:
-        log(f"  ... 경고 {len(warns) - 20}건 더")
-    log(f"DXF 저장: {dxf_path}  (LINE {n_line}개, ARC {n_arc}개, R={radius_mm:g})")
-    if doc.ports:
-        log(f"  포트 마커 {len(marks)}개"
-            + (" → 레이어 RAIL_PORT 에 원(r=100)으로 표시" if marks
-               else f" 생략 (PORT {len(doc.ports)}개는 그리지 않음)"))
-    return {"dxf": str(dxf_path), "lines": n_line, "arcs": n_arc,
-            "nodes": len(doc.nodes), "links": len(doc.links),
-            "ports": len(marks), "warnings": warns}
+    if not module_to_cad.has_modules(map_path):
+        raise NotModuleMap("모듈 정보(MODULE 레코드)가 없는 MAP 입니다.\n"
+                           "CAD→MAP 으로 만든 모듈 형식 MAP 만 CAD 로 복원합니다. DXF 를 만들지 않았습니다.")
+    return module_to_cad.module_map_to_dxf(map_path, Path(dxf_path), radius_mm=radius_mm, log=log)
 
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="MAP → CAD (레일 센터선 DXF) 역변환")
+    ap = argparse.ArgumentParser(description="모듈 형식 MAP → CAD(모듈 블록 DXF) 역변환")
     ap.add_argument("map_path")
     ap.add_argument("-o", "--out", default=None)
     ap.add_argument("-r", "--radius", type=float, default=480.0)

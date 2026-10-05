@@ -126,6 +126,7 @@ def module_map_to_dxf(map_path, dxf_path=None, *, cfg: Optional[dict] = None, ra
     lay = Lay()
     lay.param = mp.param
     lay.doc.layers.add("RAIL_MODULE", color=3)
+    lay.doc.layers.get("RAIL").color = 7          # 모듈 밖 선·호는 흰색 (선·호 → 모듈 치환 결과와 같게: 모듈 초록, 나머지 흰색)
     warns: List[str] = []
     slots: Dict[Tuple[str, int], Tuple[Pt, Pt, float]] = {}      # (모듈, 슬롯) → (슬롯 점, 바깥 방향, 마진)
     by_id = {m.id: m for m in mp.modules}

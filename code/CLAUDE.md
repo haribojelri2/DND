@@ -99,6 +99,17 @@ Plugin modules are matched to spec types by free-end positions + outward directi
 rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/LINK/MODULE lines exactly
 (`tmp guide_examples.py`); drawings without modules and `enabled=false` are byte-identical to before.
 
+### MODULE FORMAT → CAD (module_to_cad.py) — reverse conversion
+
+`map_to_cad.map_to_dxf` hands any map with `MODULE/` records to `module_to_cad.module_map_to_dxf` (GUI MAP→CAD and
+`DXFtoMAP.exe --map2cad` included). Each MODULE record is re-placed as the plugin block whose forward match
+(`module_map.match_module`) gives the same type/angle/reference point (plugin names × 4 rotations tried); W is W1/W2
+chosen by the module's NODE positions (slot + margin). Slot connections ("ID-n") become slot-to-slot lines; links
+touching non-module nodes are rebuilt with `map_to_cad.reconstruct`, plus the margin piece slot → node. The result
+carries MODULEPARAM as the drawing parameter so it converts again. Round trip CAD→MAP→CAD→MAP is identical (direction
+ignored) for guide 1–4, mail case 2, module tests A–H, 260410/asd/fromMap50 substitutions; limit: curve links whose
+length was cut by a slot margin overshooting the next arc (length < chord) come back as R arcs (`tmp roundtrip.py`).
+
 ### Plugin Module tab (RailPlugin/ModuleCommands.cs) — one parameter set per drawing
 
 R/L/W1/W2/A/M1/M2 stored in the drawing's NOD XRecord `RAILPLUGIN_MODULEPARAM` (= MODULEPARAM). Commands: RAILMODPARAM(P) set,

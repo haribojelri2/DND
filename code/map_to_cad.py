@@ -511,6 +511,12 @@ def map_to_dxf(map_path: str | Path, dxf_path: str | Path | None = None, *,
         dxf_path = map_path.with_name(map_path.stem + "_fromMap.dxf")
     dxf_path = Path(dxf_path)
 
+    # 모듈 형식 MAP(MODULE/MODULEPARAM 레코드)이면 모듈 단위로 되살린다
+    import module_to_cad
+    if module_to_cad.has_modules(map_path):
+        log("모듈 형식 MAP - 모듈 블록으로 복원합니다")
+        return module_to_cad.module_map_to_dxf(map_path, dxf_path, radius_mm=radius_mm, log=log)
+
     doc = load_map(map_path)
     log(f"MAP 읽음: NODE {len(doc.nodes)}개, LINK {len(doc.links)}개, PORT {len(doc.ports)}개")
     if not doc.links:

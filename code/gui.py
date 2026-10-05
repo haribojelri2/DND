@@ -849,7 +849,8 @@ class App(tk.Tk):
                 st = map_to_dxf(mp, None, radius_mm=radius, radius_tol_mm=radius_tol,
                                 draw_ports=draw_ports, log=log)
                 msg = (f"DXF 생성 완료\n\n{st['dxf']}\n\n"
-                       f"LINE {st['lines']}개 / ARC {st['arcs']}개\n"
+                       + (f"모듈 {st['modules']}개 / " if "modules" in st else "")
+                       + f"LINE {st['lines']}개 / ARC {st['arcs']}개\n"
                        f"경고 {len(st['warnings'])}건")
                 self.after(0, lambda: messagebox.showinfo("역변환 완료", msg))
             except Exception as e:

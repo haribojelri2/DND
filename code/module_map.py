@@ -677,7 +677,8 @@ def module_lines(res: Result) -> List[str]:
     out = []
     for m in res.modules:
         # 가이드 예시와 같게: Y 뒤에 슬롯 필드를 '/' 로 잇고 끝에 '/' 를 더 붙이지 않는다
-        out.append(f"MODULE/{m.id}/{m.type}/{m.angle}/{m.ref[0]:.1f}/{m.ref[1]:.1f}/" + "/".join(m.links))
+        rx, ry = (("0.0" if v == "-0.0" else v) for v in (f"{m.ref[0]:.1f}", f"{m.ref[1]:.1f}"))
+        out.append(f"MODULE/{m.id}/{m.type}/{m.angle}/{rx}/{ry}/" + "/".join(m.links))
     R, L, W1, W2, A, M1, M2 = res.param
     out.append(f"MODULEPARAM/{R:.1f}/{L:.1f}/{W1:.1f}/{W2:.1f}/{A:.1f}/{M1:.1f}/{M2:.1f}")
     return out

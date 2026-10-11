@@ -163,7 +163,9 @@ def template(t: str, R: float, L: float, W: float, A: float, E: float):
     H = 2 * L + h
     p1 = (-R + R * math.cos(ar), L + R * math.sin(ar))
     dvec = (-math.sin(ar), math.cos(ar))
-    cross_p = TPath(1, 2, "cross", 2 * L + 2 * R * ar + D, add(p1, mul(dvec, max(D, 0.0) / 2)), dvec)
+    # probe = 대각선의 1/4 지점. 가운데(1/2)는 N 의 두 대각선(NL·NR 거울상)이 만나는 X 교차점이라 둘을 못 가린다
+    #  (끝점 4개도 직사각형이라 같음) → N RIGHT 블록이 NL 로 판정돼 N 링크가 반대 차선끼리 이어졌다.
+    cross_p = TPath(1, 2, "cross", 2 * L + 2 * R * ar + D, add(p1, mul(dvec, max(D, 0.0) / 4)), dvec)
     if t in ("NL", "NR"):
         slots = [TSlot((0.0, 0.0), (0.0, -1.0)), TSlot((-W, H), (0.0, 1.0)),
                  TSlot((0.0, H), (0.0, 1.0)), TSlot((-W, 0.0), (0.0, -1.0))]

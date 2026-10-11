@@ -12,6 +12,7 @@
                                                  둘 다 끝나면 S
   90° 호 하나, 한쪽 끝이 갈림점                  → BRANCH
   90° 호 하나, 양쪽 끝이 그냥 이어짐              → CURVE
+  90° 호 두 개가 한 점에서 좌우로 갈라짐(관통 없음) → Y
 
 모듈 하나가 덮는 직선 길이는 L 로 정해진다(다리·관통 직선). 붙어 있는 직선이 짧으면 L 을 줄여서 맞추고,
 그래도 안 맞으면 그 자리는 바꾸지 않고 경고한다. 모듈이 덮지 않은 선·호는 그대로 남긴다.
@@ -352,6 +353,33 @@ def find_groups(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> 
                 groups.append(ladder)
                 taken.update(used)
                 break
+
+    # Y: 한 접합점에서 같은 방향으로 출발해 좌우로 갈라지는 90° 호 두 개 + 반대편에서 들어오는 직선 하나
+    #  (관통 직선이 있으면 갈림점 두 개 = BRANCH 두 개라 Y 가 아니다).  포함 관계: CURVE 두 개 → Y
+    for i, a in enumerate(segs):
+        if i in taken or a.kind != "ARC" or abs(abs(a.sweep) - 90.0) > ang_tol:
+            continue
+        for J in (a.p0, a.p1):
+            if g.deg(J) != 3:
+                continue
+            ua = a.tangent_at(J)
+            stem = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"
+                    and _smooth(mul(segs[k].tangent_at(J), -1.0), ua, ang_tol)]
+            if not stem:
+                continue
+            j = next((k for k in g.others(J, [i]) if k not in taken and segs[k].kind == "ARC"
+                      and abs(abs(segs[k].sweep) - 90.0) <= ang_tol and abs(segs[k].r - a.r) <= tol
+                      and _smooth(ua, segs[k].tangent_at(J), ang_tol)
+                      and turn_sign(segs[k], J) != turn_sign(a, J)), None)
+            if j is None:
+                continue
+            la, lb = single_ladder(g, i, ang_tol), single_ladder(g, j, ang_tol)
+            head = math.degrees(math.atan2(ua[1], ua[0]))
+            y = Cand("Y", J, lambda p: (0.0, p["l"]), head, a.r, 900.0, 45.0, (i, j))
+            ladder = [[[la[0], lb[0]]]] if la and lb else []
+            groups.append(ladder + [[[y]]])                                            # CURVE 두 개 → Y
+            taken.update((i, j))
+            break
 
     for i, s in enumerate(segs):
         if i in taken:

@@ -442,16 +442,32 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
 
     # 3) 모듈 사이 직선 연결: 슬롯에서 시작하는 직선 사슬 → 반대편 슬롯
     key = lambda p: (round(p[0] / tol), round(p[1] / tol))
-    at_pt = collections.defaultdict(list)
+    _cells = collections.defaultdict(list)
     for k, pc in enumerate(plain):
-        at_pt[key(pc[1])].append(k)
-        at_pt[key(pc[2])].append(k)
+        _cells[key(pc[1])].append((k, pc[1]))
+        _cells[key(pc[2])].append((k, pc[2]))
+
+    class _Near:
+        """점 p 에서 tol 안에 끝점이 있는 조각들. 격자 칸 경계(예: 좌표/tol = x.5)에 걸린 점이 옆 칸으로
+        빠지지 않도록 주변 칸까지 거리로 찾는다 (칸 하나만 보면 같은 점의 조각을 놓쳐 슬롯 연결이 빠진다)."""
+        def __getitem__(self, kp):
+            p = kp
+            cx, cy = key(p)
+            out = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for k, q in _cells.get((cx + dx, cy + dy), ()):
+                        if dist(q, p) <= tol:
+                            out.append(k)
+            return out
+
+    at_pt = _Near()
 
     used_piece = set()
     conns = []   # (mA, iA, mB, iB, g, pieces[], forward(a→b 진행))
     for m in smods:
         for i, s in enumerate(m.slots):
-            ks = [k for k in at_pt[key(s.pos)] if plain[k][0] == "LINE" and k not in used_piece]
+            ks = [k for k in at_pt[s.pos] if plain[k][0] == "LINE" and k not in used_piece]
             for k in ks:
                 chain, cur, g = [k], s.pos, 0.0
                 ok = True
@@ -466,8 +482,8 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
                     hit = slot_near(cur)
                     if hit and hit[0] is not m:
                         break
-                    cont = [q for q in at_pt[key(cur)] if q not in chain and plain[q][0] == "LINE"]
-                    if len(at_pt[key(cur)]) != 2 or len(cont) != 1:
+                    cont = [q for q in at_pt[cur] if q not in chain and plain[q][0] == "LINE"]
+                    if len(at_pt[cur]) != 2 or len(cont) != 1:
                         ok = False
                         break
                     chain.append(cont[0])

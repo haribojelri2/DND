@@ -153,6 +153,10 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
                  node_format="v2", extra_lines=module_map.module_lines(res))
         log(f"모듈 {len(res.modules)}개 → MODULE 레코드, MODULEPARAM "
             + "/".join(f"{v:g}" for v in res.param))
+        _ovl = [w for w in res.warnings if w.startswith("[확인 필요] 마진 겹침")]
+        if _ovl:
+            log(f"[확인 필요] 마진 겹침 {len(_ovl)}곳 - 두 모듈 간격이 마진 합보다 짧습니다. "
+                f"마진(M1·M2) 설정이나 도면을 확인하세요 (위치는 위 로그)")
         _report_tail(doc, DXF_PATH, mjudge, nodes, links, stb_ports, MAP_OUT, log)
         return
 

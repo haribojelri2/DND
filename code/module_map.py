@@ -530,17 +530,26 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
     suppressed = set()     # (module id, slot idx)
     merged = []            # (mA, pathA, mB, pathB, g)
     plain_conn = []
+    same_point = {}        # 마진이 꼭 맞아 두 슬롯 NODE 가 한 점에 놓이는 쌍: (모듈 id, 슬롯) ↔ (모듈 id, 슬롯)
+    EQ_TOL = 1.0
     for c in conns:
         mA, iA, mB, iB, g, chain, fw = c
         need = margin(mA.slots[iA]) + margin(mB.slots[iB])
+        if abs(g - need) <= EQ_TOL:
+            # 간격 = 마진 합: 두 NODE 가 같은 점 → NODE 하나로 쓰고 사이 링크(길이 0)는 만들지 않는다
+            same_point[(mA.id, iA)] = (mB.id, iB)
+            same_point[(mB.id, iB)] = (mA.id, iA)
+            continue
         if g >= need - 1e-6:
             plain_conn.append(c)
             continue
         okA = (iA + 1) in MERGEABLE.get(mA.type, set())
         okB = (iB + 1) in MERGEABLE.get(mB.type, set())
         if not (okA and okB):
-            warn(f"[경고] 모듈 {mA.id} 슬롯{iA + 1} ↔ {mB.id} 슬롯{iB + 1} 마진 겹침(간격 {g:.0f} < {need:.0f}) - "
-                 f"90° 곡선 끝이 아니라 규칙 미정. NODE 를 그대로 둠")
+            p = mA.slots[iA].pos
+            warn(f"[확인 필요] 마진 겹침 ({p[0]:.0f}, {p[1]:.0f}): 모듈 {mA.id}({mA.type}) 슬롯{iA + 1} ↔ "
+                 f"모듈 {mB.id}({mB.type}) 슬롯{iB + 1} 간격 {g:.0f} mm 가 마진 합 {need:.0f} mm 보다 짧음 - "
+                 f"마진(M1·M2) 설정 또는 도면의 두 모듈 간격을 확인하세요")
             plain_conn.append(c)
             continue
         pA = next(p for p in mA.paths if iA + 1 in (p.a, p.b))
@@ -567,6 +576,10 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
     for m in smods:
         for i, s in enumerate(m.slots):
             if (m.id, i) in suppressed:
+                continue
+            other = same_point.get((m.id, i))
+            if other is not None and other in nid:
+                nid[(m.id, i)] = nid[other]          # 같은 점의 NODE 를 함께 쓴다
                 continue
             nid[(m.id, i)] = new_node(add(s.pos, mul(s.out, margin(s))), m.id, str(i + 1))
 

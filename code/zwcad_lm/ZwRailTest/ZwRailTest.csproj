@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>ZwRailTest</AssemblyName>
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!-- net48 참조 어셈블리(타게팅 팩 없이도 빌드되게) -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- ZWCAD LM 2026 관리형 어셈블리 (런타임 제공 → Private=false, 복사 안 함) -->
+  <ItemGroup>
+    <Reference Include="ZwManaged">
+      <HintPath>C:\Program Files\ZWSOFT\ZWCAD LM 2026 Kor\ZwManaged.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZwDatabaseMgd">
+      <HintPath>C:\Program Files\ZWSOFT\ZWCAD LM 2026 Kor\ZwDatabaseMgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

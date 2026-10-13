@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- ZWCAD LM 2026 용 RailPlugin.
+       소스는 ../RailPlugin/*.cs 를 port.ps1 이 generated\ 로 치환 복사한 것(직접 편집 금지).
+       AutoCAD 판과의 차이는 타깃(net8.0-windows→net48)과 참조 어셈블리뿐. -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>            <!-- ZWCAD .NET API = .NET Framework 4.7/4.8 -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RailPluginZw</AssemblyName>
+    <RootNamespace>RailPlugin</RootNamespace>
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <!-- 리본 버튼 아이콘(WPF System.Windows.Media)용 -->
+    <UseWPF>true</UseWPF>
+    <!-- 컴파일 대상은 generated\ 만 (port.ps1 산출물) -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- ZWCAD 설치 경로 — 다른 버전/에디션이면 -p:ZwDir="..." 로 덮어쓰기 -->
+  <PropertyGroup>
+    <!-- ZWCAD 가 안 깔린 PC 에서도 빌드되게: refs\ 에 ZwManaged/ZwDatabaseMgd/ZdWindows.dll 3개만 두면 된다
+         (런타임 제공 어셈블리라 참조용으로만 쓰이고 배포물에는 안 들어간다) -->
+    <ZwDir Condition="'$(ZwDir)'=='' And Exists('$(MSBuildProjectDirectory)\refs\ZwManaged.dll')">$(MSBuildProjectDirectory)\refs</ZwDir>
+    <ZwDir Condition="'$(ZwDir)'=='' And Exists('C:\Program Files\ZWSOFT\ZWCAD LM 2026 Kor\ZwManaged.dll')">C:\Program Files\ZWSOFT\ZWCAD LM 2026 Kor</ZwDir>
+    <ZwDir Condition="'$(ZwDir)'=='' And Exists('C:\Program Files\ZWSOFT\ZWCAD 2026 Kor\ZwManaged.dll')">C:\Program Files\ZWSOFT\ZWCAD 2026 Kor</ZwDir>
+    <ZwDir Condition="'$(ZwDir)'=='' And Exists('C:\Program Files\ZWSOFT\ZWCAD Mechanical 2026 Kor\ZwManaged.dll')">C:\Program Files\ZWSOFT\ZWCAD Mechanical 2026 Kor</ZwDir>
+  </PropertyGroup>
+
+  <Target Name="CheckZwDir" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(ZwDir)'==''"
+           Text="ZWCAD 관리형 어셈블리를 찾지 못했습니다. 셋 중 하나로 해결하세요:&#xA;  (1) ZWCAD 설치&#xA;  (2) ZwManaged.dll / ZwDatabaseMgd.dll / ZdWindows.dll 3개를 $(MSBuildProjectDirectory)\refs 에 복사&#xA;  (3) dotnet build -p:ZwDir=&quot;C:\Program Files\ZWSOFT\...&quot;" />
+  </Target>
+
+  <!-- net48 참조 어셈블리(개발자 팩 미설치 PC 에서도 빌드되게) -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- ZWCAD 관리형 어셈블리 (런타임 제공 → Private=false, 출력에 복사 안 함)
+       AutoCAD 대응:  acmgd→ZwManaged / acdbmgd→ZwDatabaseMgd / AdWindows→ZdWindows
+       (accoremgd 대응 DLL 은 없으나 이 플러그인은 사용하지 않음) -->
+  <ItemGroup>
+    <Reference Include="ZwManaged">
+      <HintPath>$(ZwDir)\ZwManaged.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZwDatabaseMgd">
+      <HintPath>$(ZwDir)\ZwDatabaseMgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ZdWindows">
+      <HintPath>$(ZwDir)\ZdWindows.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- 빌드 전에 원본(../RailPlugin) → generated 치환 복사 -->
+  <Target Name="PortSources" BeforeTargets="BeforeBuild">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\port.ps1&quot;" />
+    <ItemGroup>
+      <Compile Include="generated\*.cs" />
+    </ItemGroup>
+  </Target>
+</Project>

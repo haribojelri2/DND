@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- RailPluginZw 설치 프로그램 — DLL + 부품 DXF 를 내장한 단일 exe.
+       빌드 전에 본체(RailPluginZw.csproj)가 먼저 빌드된다(ProjectReference, 참조는 하지 않음). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>              <!-- 콘솔창 없이 — 결과는 메시지 상자로 -->
+    <TargetFramework>net48</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>RailPluginZwSetup</AssemblyName>
+    <RootNamespace>RailPluginZwSetup</RootNamespace>
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="Microsoft.CSharp" />     <!-- dynamic (COM 자동화)용 -->
+  </ItemGroup>
+
+  <!-- 본체(RailPluginZw)는 build_installer.ps1 이 먼저 빌드한다.
+       ProjectReference 로 걸면 자식 빌드에서 ZwDir 자동 탐지가 동작하지 않아 빼두었다. -->
+
+  <!-- 배포물 내장: 플러그인 DLL + 부품 블록 DXF -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\bin\x64\Release\RailPluginZw.dll">
+      <LogicalName>RailPluginZw.dll</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\zwcad_lm\dist\분기 레일 형상 세트 정리 (레이아웃 설계) v0_260721.dxf">
+      <LogicalName>parts.dxf</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <!-- CAD→MAP 변환기(PyInstaller 단일 exe) + 기본 설정. 리본 'CAD→MAP' 버튼이 DLL 옆에서 찾는다.
+         변환기 재빌드: code\ 에서  python -m PyInstaller DXFtoMAP.spec -y  → code\dist\DXFtoMAP.exe -->
+    <EmbeddedResource Include="..\..\dist\DXFtoMAP.exe">
+      <LogicalName>DXFtoMAP.exe</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\..\dist\config.json">
+      <LogicalName>config.json</LogicalName>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Target Name="CheckPayload" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\bin\x64\Release\RailPluginZw.dll')"
+           Text="RailPluginZw.dll 이 없습니다. 본체를 먼저 빌드하세요: dotnet build ..\RailPluginZw.csproj -c Release -p:Platform=x64" />
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)\..\..\dist\DXFtoMAP.exe')"
+           Text="DXFtoMAP.exe 가 없습니다. 변환기를 먼저 빌드하세요: code\ 에서 python -m PyInstaller DXFtoMAP.spec --noconfirm" />
+  </Target>
+</Project>

@@ -550,19 +550,14 @@ namespace RailPlugin
             return n;
         }
 
-        // 도면 모듈에 현재 파라미터 일괄 적용(선택 / Enter = 전체)
+        // 도면의 모든 모듈에 현재 파라미터 일괄 적용 — 명령 줄에서 범위를 묻지 않는다
         [CommandMethod("RAILMODAPPLY")]
         public void RailModApply()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor; Database db = doc.Database;
             var p = ModuleParams.Get(db);
-            var pso = new PromptSelectionOptions { MessageForAdding = "\n적용할 모듈 선택 (Enter = 도면의 모든 모듈)" };
-            PromptSelectionResult psr = ed.GetSelection(pso);
-            IEnumerable<ObjectId> only = null;
-            if (psr.Status == PromptStatus.OK) only = psr.Value.GetObjectIds();
-            else if (psr.Status != PromptStatus.Error && psr.Status != PromptStatus.None) return;
-            int n = ApplyAll(doc, p, p, only);
+            int n = ApplyAll(doc, p, p, null);
             ed.WriteMessage($"\nRAILMODAPPLY: 모듈 {n}개를 {p.Digest()} 로 다시 만들었습니다.");
         }
 
@@ -578,19 +573,16 @@ namespace RailPlugin
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor; Database db = doc.Database;
-            IEnumerable<ObjectId> only = null;
-            if (dialog)
-            {
-                var pso = new PromptSelectionOptions { MessageForAdding = "\n분석할 범위 선택 (Enter = 도면 전체)" };
-                PromptSelectionResult psr = ed.GetSelection(pso);
-                if (psr.Status == PromptStatus.OK) only = psr.Value.GetObjectIds();
-                else if (psr.Status != PromptStatus.Error && psr.Status != PromptStatus.None) return;
-            }
+            // 도면 전체를 분석한다 — 명령 줄에서 범위를 묻지 않고, 결과는 대화상자로만 보여준다
             var cur = ModuleParams.Get(db);
-            var res = ModuleParamExtractor.Run(db, cur, only);
-            foreach (string ln in res.Summary.Split('\n')) ed.WriteMessage("\n  " + ln);
-            ed.WriteMessage($"\n  추출 결과: {res.P.Digest()}");
-            if (!dialog) { Commit(doc, cur, res.P, false, "RAILMODEXTRACTP"); return; }
+            var res = ModuleParamExtractor.Run(db, cur, null);
+            if (!dialog)
+            {
+                foreach (string ln in res.Summary.Split('\n')) ed.WriteMessage("\n  " + ln);
+                ed.WriteMessage($"\n  추출 결과: {res.P.Digest()}");
+                Commit(doc, cur, res.P, false, "RAILMODEXTRACTP");
+                return;
+            }
             var dlg = ModuleParamDialog.Open(res.P, "도면 분석 결과\n" + res.Summary, false);
             if (dlg == null) { ed.WriteMessage("\nRAILMODEXTRACT: 적용하지 않음."); return; }
             Commit(doc, cur, dlg.Value, dlg.ApplyToExisting, "RAILMODEXTRACT");
@@ -1036,7 +1028,7 @@ namespace RailPlugin
                 srcP.Items.Add(MakeCmdButton("도면에서\n추출", "RAILMODEXTRACT",
                     "선·호 도면(또는 모듈 도면)을 분석해 R·W1·W2·A 를 뽑아 파라미터로 적용합니다"));
                 srcP.Items.Add(MakeCmdButton("도면 모듈에\n일괄 적용", "RAILMODAPPLY",
-                    "도면에 이미 그린 모듈을 현재 파라미터로 다시 만듭니다(선택 / Enter = 전체)"));
+                    "도면에 이미 그린 모든 모듈을 현재 파라미터로 다시 만듭니다"));
                 _widthButton = MakeCmdButton("폭\nW1", "RAILMODW",
                     "폭을 쓰는 모듈(U, DOUBLE BRANCH, U BRANCH, N, BY PASS, S)을 W1 / W2 중 어느 폭으로 배치할지 전환합니다. 배치할 때는 묻지 않습니다");
                 srcP.Items.Add(_widthButton);

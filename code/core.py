@@ -8,6 +8,7 @@ MIN_LINE_LENGTH = 0.0
 SNAP_DECIMALS = 6
 SNAP_TOL = 200.0
 INTER_MERGE_TOL = 100.0     # 기하/토폴로지 병합 허용 오차 (mm)
+T_TOUCH_TOL = 0.01          # 선 끝점이 다른 선 위에 닿았다고 보는 거리 (mm) — 부동소수 오차 흡수용
 CLEAN_TOL = 100.0           # DXF 파싱 단계 중복·영세그먼트 정리 오차 (mm)
 SHORT_STRAIGHT_THRESHOLD = 900.0
 @dataclass

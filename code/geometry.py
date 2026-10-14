@@ -75,6 +75,16 @@ def split_edges_at_intersections(
             for hit in seg_intersection(a, b, c1, d1):
                 cuts.append(hit)
                 register_vertex(hit)
+            # T자 접점: M 의 끝점이 L 위에 부동소수 오차만큼 어긋나 있으면 seg_intersection 이 놓친다
+            #  (도면 좌표 69791.66666932 vs 선 위 69791.66667424 등). 평행선은 제외(겹침 처리는 별도).
+            ux, uy = b[0] - a[0], b[1] - a[1]
+            vx, vy = d1[0] - c1[0], d1[1] - c1[1]
+            nn = math.hypot(ux, uy) * math.hypot(vx, vy)
+            if nn > EPS and abs(ux * vy - uy * vx) / nn > 1e-6:
+                for ep in (c1, d1):
+                    if point_on_segment(ep, a, b, T_TOUCH_TOL):
+                        cuts.append(ep)
+                        register_vertex(ep)
 
         for arc in arc_list:
             if arc.r < 1e-12:

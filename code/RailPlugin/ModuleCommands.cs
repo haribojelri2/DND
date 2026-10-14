@@ -534,6 +534,7 @@ namespace RailPlugin
                     ids = ((BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead)).Cast<ObjectId>().ToList();
                 }
                 var moves = new List<KeyValuePair<Point3d, Point3d>>();   // 접속구 예전 위치 → 새 위치
+                var anchors = new List<Point3d>();                          // 그 접속구 모듈의 곡선 기준점(첫 호 중심)
                 foreach (ObjectId id in ids)
                 {
                     var br = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
@@ -551,9 +552,13 @@ namespace RailPlugin
                     var newPorts = ModuleGeom.Ports(mi, r1, l1, w1, a1);
                     // 곡선 고정: 첫 호의 중심이 예전 자리에 남도록 모듈을 옮긴다 → L 만 바뀌면 곡선은 그대로, 직선 다리만 바깥으로 신축
                     Vector3d shift = ArcAnchor(mi, r0, l0, w0, a0) - ArcAnchor(mi, r1, l1, w1, a1);
+                    Point3d anchorW = ArcAnchor(mi, r0, l0, w0, a0).TransformBy(xf);
                     if (oldPorts.Count == newPorts.Count)
                         for (int k = 0; k < oldPorts.Count; k++)
+                        {
                             moves.Add(new KeyValuePair<Point3d, Point3d>(oldPorts[k].TransformBy(xf), (newPorts[k] + shift).TransformBy(xf)));
+                            anchors.Add(anchorW);
+                        }
                     RailFactory.SetModuleParams(tr, br, r1, l1, w1, a1);
                     if (shift.Length > 1e-9)
                     {
@@ -562,7 +567,7 @@ namespace RailPlugin
                     }
                     n++;
                 }
-                FollowPorts(db, tr, moves);
+                FollowPorts(db, tr, moves, anchors);
                 tr.Commit();
             }
             PurgeModuleBlocks(db);
@@ -601,10 +606,12 @@ namespace RailPlugin
         }
 
         // 결과 보고용: 마지막 ApplyAll 에서 끝을 옮긴 선 수 / 자동으로 못 이은 곳(호 끝, 모듈끼리 맞닿은 곳)
-        public static int LastLinesMoved, LastArcsLeft, LastModuleGaps;
+        public static int LastLinesMoved, LastArcsLeft, LastModuleGaps, LastBridged, LastLinesRemoved;
 
         static string FollowNote()
             => (LastLinesMoved > 0 ? $" 붙어 있던 선 {LastLinesMoved}개를 따라 늘였습니다." : "")
+             + (LastBridged > 0 ? $" 맞닿아 있던 모듈 사이 틈 {LastBridged}곳을 직선으로 이었습니다." : "")
+             + (LastLinesRemoved > 0 ? $" 다리가 늘어나 덮인 선 {LastLinesRemoved}개를 지웠습니다." : "")
              + (LastArcsLeft + LastModuleGaps > 0
                 ? $" 자동으로 잇지 못한 곳: 호 끝 {LastArcsLeft}곳, 모듈끼리 맞닿았던 곳 {LastModuleGaps}곳 — 확인하세요." : "");
 
@@ -669,22 +676,108 @@ namespace RailPlugin
             ed.WriteMessage($"\nRAILMODAPPLYTEST: 모듈 {n}개 적용, 접속구 {ok + bad}개 중 선이 붙어 있음 {ok} / 끊어짐 {bad}." + FollowNote());
         }
 
+        // 헤드리스 검증 2: 모듈끼리 직접 맞닿은 쌍(L 200) → L 20 으로 줄이면 틈을 직선으로 이음 → 다시 L 200 이면 그 직선이 지워지고 다시 맞닿음
+        [CommandMethod("RAILMODAPPLYTEST2")]
+        public void RailModApplyTest2()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Database db = doc.Database; Editor ed = doc.Editor;
+            var p = new ModuleParams.P { R = 450, L = 200, W1 = 900, W2 = 1350, A = 45, M1 = 150, M2 = 520 };
+            ModuleParams.Set(db, p);
+            var placed = new List<ObjectId>();
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var (mi, x) in new[] { (0, 0.0), (2, 10000.0) })
+                {
+                    var a = RailFactory.PlaceModule(db, tr, new Point3d(x, 0, 0), mi, p.R, p.L, p.W1, p.A);
+                    var ba = (BlockReference)tr.GetObject(a, OpenMode.ForRead);
+                    Point3d end = ModuleGeom.Ports(mi, p.R, p.L, p.W1, p.A)[0].TransformBy(ba.BlockTransform);
+                    var b = RailFactory.PlaceModule(db, tr, new Point3d(x, 0, 0), mi, p.R, p.L, p.W1, p.A);
+                    var bb = (BlockReference)tr.GetObject(b, OpenMode.ForWrite);
+                    bb.TransformBy(Matrix3d.Rotation(Math.PI, Vector3d.ZAxis, end));   // 끝점끼리만 맞닿는 쌍
+                    placed.Add(a); placed.Add(b);
+                }
+                tr.Commit();
+            }
+            var arcs0 = WorldArcs(db, placed);
+            var p2 = p.Clone(); p2.L = 20;
+            ApplyAll(doc, p, p2, null);
+            string note1 = FollowNote();
+            int joined1 = CountJoined(db, placed);
+            var p3 = p2.Clone(); p3.L = 200;
+            ApplyAll(doc, p2, p3, null);
+            string note2 = FollowNote();
+            var arcs2 = WorldArcs(db, placed);
+            int same = 0;
+            foreach (var a in arcs0)
+                if (arcs2.Exists(b => b.Item1.DistanceTo(a.Item1) < 1e-3 && Math.Abs(b.Item2 - a.Item2) < 1e-3)) same++;
+            int lines = 0;
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                foreach (ObjectId id in ms) if (tr.GetObject(id, OpenMode.ForRead) is Line) lines++;
+                tr.Commit();
+            }
+            ed.WriteMessage($"\nRAILMODAPPLYTEST2: L200->20 접속구 연결 {joined1}/{placed.Count * 0 + 2}쌍 |{note1}");
+            ed.WriteMessage($"\nRAILMODAPPLYTEST2: L20->200 남은 흰 선 {lines}개(0 기대), 곡선 원위치 {same}/{arcs0.Count} |{note2}");
+        }
+
+        // 맞닿은 쌍(placed 의 2개씩)의 첫 접속구가 흰 선 하나로 이어져 있는지 센다
+        static int CountJoined(Database db, List<ObjectId> placed)
+        {
+            int ok = 0;
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                var lines = new List<Line>();
+                var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+                var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
+                foreach (ObjectId id in ms) if (tr.GetObject(id, OpenMode.ForRead) is Line ln) lines.Add(ln);
+                for (int k = 0; k + 1 < placed.Count; k += 2)
+                {
+                    var pa = PortsW(tr, placed[k]); var pb = PortsW(tr, placed[k + 1]);
+                    bool hit = lines.Exists(ln => pa.Exists(q => q.DistanceTo(ln.StartPoint) < 1e-3 || q.DistanceTo(ln.EndPoint) < 1e-3)
+                                               && pb.Exists(q => q.DistanceTo(ln.StartPoint) < 1e-3 || q.DistanceTo(ln.EndPoint) < 1e-3));
+                    if (hit) ok++;
+                }
+                tr.Commit();
+            }
+            return ok;
+        }
+
+        static List<Point3d> PortsW(Transaction tr, ObjectId id)
+        {
+            var br = (BlockReference)tr.GetObject(id, OpenMode.ForRead);
+            var res = new List<Point3d>();
+            foreach (var q in ModuleGeom.Ports(RailFactory.GetCount(br), RailFactory.GetModR(br), RailFactory.GetLength(br), RailFactory.GetWidth(br), RailFactory.GetModA(br)))
+                res.Add(q.TransformBy(br.BlockTransform));
+            return res;
+        }
+
         // 모듈 접속구에 붙어 있던 흰색 선(LINE, 열린 폴리선)의 끝을 새 접속구 위치로 옮긴다.
         //  호는 끝만 옮기면 모양이 깨지므로 세기만 한다. 두 모듈의 접속구가 맞닿아 있었는데 새 위치가 다르면 틈으로 센다.
-        static void FollowPorts(Database db, Transaction tr, List<KeyValuePair<Point3d, Point3d>> moves)
+        static void FollowPorts(Database db, Transaction tr, List<KeyValuePair<Point3d, Point3d>> moves, List<Point3d> anchors)
         {
             const double TOL = 1.0;
-            LastLinesMoved = LastArcsLeft = LastModuleGaps = 0;
+            LastLinesMoved = LastArcsLeft = LastModuleGaps = LastBridged = LastLinesRemoved = 0;
             Func<Point3d, Point3d?> target = q =>
             {
                 foreach (var m in moves)
                     if (m.Key.DistanceTo(q) <= TOL) return m.Value;
                 return null;
             };
+            // 모듈끼리 직접 맞닿아 있던 접속구: 둘 다 곡선 쪽으로 물러났으면(다리가 짧아짐) 그 틈은 직선 레일 → 흰 선으로 잇는다.
+            //  한쪽이라도 바깥으로 나갔으면(다리가 길어짐) 서로 파고든 것 → 잇지 않고 센다(겹침은 빨간색으로 보인다).
+            var bridges = new List<KeyValuePair<Point3d, Point3d>>();
             for (int i = 0; i < moves.Count; i++)
                 for (int j = i + 1; j < moves.Count; j++)
-                    if (moves[i].Key.DistanceTo(moves[j].Key) <= TOL && moves[i].Value.DistanceTo(moves[j].Value) > TOL)
-                        LastModuleGaps++;
+                {
+                    if (moves[i].Key.DistanceTo(moves[j].Key) > TOL || moves[i].Value.DistanceTo(moves[j].Value) <= TOL) continue;
+                    bool backI = anchors[i].DistanceTo(moves[i].Value) < anchors[i].DistanceTo(moves[i].Key) - 1e-6;
+                    bool backJ = anchors[j].DistanceTo(moves[j].Value) < anchors[j].DistanceTo(moves[j].Key) - 1e-6;
+                    if (backI && backJ) bridges.Add(new KeyValuePair<Point3d, Point3d>(moves[i].Value, moves[j].Value));
+                    else LastModuleGaps++;
+                }
             if (moves.Count == 0) return;
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
             var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForRead);
@@ -696,8 +789,18 @@ namespace RailPlugin
                     Point3d? s = target(ln.StartPoint), e = target(ln.EndPoint);
                     if (s == null && e == null) continue;
                     ln.UpgradeOpen();
-                    if (s != null) ln.StartPoint = s.Value;
-                    if (e != null) ln.EndPoint = e.Value;
+                    Vector3d before = ln.EndPoint - ln.StartPoint;
+                    Point3d ns = s ?? ln.StartPoint, ne = e ?? ln.EndPoint;
+                    Vector3d after = ne - ns;
+                    // 양 끝이 다 옮겨져 길이가 0 이 되거나 방향이 뒤집혔으면 = 늘어난 다리가 이 선을 덮었다 → 지운다
+                    if (s != null && e != null && (after.Length <= TOL || after.DotProduct(before) <= 0))
+                    {
+                        ln.Erase();
+                        LastLinesRemoved++;
+                        continue;
+                    }
+                    ln.StartPoint = ns;
+                    ln.EndPoint = ne;
                     LastLinesMoved++;
                 }
                 else if (ent is Polyline pl && !pl.Closed && pl.NumberOfVertices >= 2)
@@ -713,6 +816,17 @@ namespace RailPlugin
                 else if (ent is Arc ac)
                 {
                     if (target(ac.StartPoint) != null || target(ac.EndPoint) != null) LastArcsLeft++;
+                }
+            }
+            if (bridges.Count > 0)
+            {
+                ms.UpgradeOpen();
+                foreach (var b in bridges)
+                {
+                    var ln = new Line(b.Key, b.Value) { Layer = "0" };     // 흰 선(0 레이어)
+                    ms.AppendEntity(ln);
+                    tr.AddNewlyCreatedDBObject(ln, true);
+                    LastBridged++;
                 }
             }
         }

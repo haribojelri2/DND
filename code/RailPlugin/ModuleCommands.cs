@@ -1056,6 +1056,8 @@ namespace RailPlugin
                 srcE.Items.Add(MakeCmdButton("선·호 →\n모듈 치환", "RAILMODCONV",
                     "선·호로 그린 도면을 도면 파라미터 한 세트로 모듈로 바꾼 새 도면(_modules.dxf)을 엽니다. 안 맞는 곳은 흰색 선·호로 남깁니다"));
                 srcE.Items.Add(MakeCmdButton("모듈\n삭제", "RAILMODDEL", "선택한 모듈을 지우고 안 쓰는 블록 정의를 정리합니다"));
+                srcE.Items.Add(MakeCmdButton("겹침\n검사", "RAILMODOVERLAP",
+                    "서로 겹쳐 그려진 모듈을 빨간색으로 표시하고, 겹침이 풀린 모듈은 원래 색으로 되돌립니다. 모듈을 놓거나 옮길 때도 자동으로 검사합니다"));
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcE });
 
                 rc.Tabs.Add(tab);

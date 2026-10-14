@@ -640,18 +640,8 @@ namespace RailPlugin
             }
             string exe = Cad2Map.Resolve();
             if (exe == null) { ed.WriteMessage("\nRAILMODCONV: 변환기(" + Cad2Map.EXE + ")를 찾지 못했습니다."); return; }
-            // 레일 레이어: 레일 선·호 하나를 고르면 그 레이어만 치환한다 (Enter = 모든 레이어)
-            string layer = "";
-            var peo = new PromptEntityOptions("\n레일 선·호 하나 선택 (그 레이어만 치환) <Enter = 모든 레이어>: ") { AllowNone = true };
-            var per = ed.GetEntity(peo);
-            if (per.Status == PromptStatus.Cancel) return;
-            if (per.Status == PromptStatus.OK)
-                using (Transaction tr = doc.Database.TransactionManager.StartTransaction())
-                {
-                    layer = ((Entity)tr.GetObject(per.ObjectId, OpenMode.ForRead)).Layer;
-                    tr.Commit();
-                }
-            string outp = RunConvert(doc, exe, layer);
+            // 항상 도면 전체(모든 레이어)를 치환한다 — 명령 줄에서 레이어를 묻지 않는다
+            string outp = RunConvert(doc, exe, "");
             if (outp == null) return;
             try { Application.DocumentManager.Open(outp, false); }
             catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 결과 도면 열기 실패 - " + ex.Message + " (" + outp + ")"); }
@@ -661,7 +651,6 @@ namespace RailPlugin
         static string RunConvert(Document doc, string exe, string layer)
         {
             Editor ed = doc.Editor;
-            ed.WriteMessage("\nRAILMODCONV: 치환 대상 레이어 = " + (layer.Length > 0 ? layer : "전체"));
             string dxf;
             try { dxf = Cad2Map.ExportCurrent(doc, "선·호 → 모듈 치환: 원본 DXF 저장 위치 (결과는 같은 폴더의 _modules.dxf)"); }
             catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 도면 내보내기 실패 - " + ex.Message); return null; }

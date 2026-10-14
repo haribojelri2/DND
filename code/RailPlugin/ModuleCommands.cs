@@ -549,10 +549,17 @@ namespace RailPlugin
                     var oldPorts = ModuleGeom.Ports(mi, r0, l0, w0, a0);
                     ModuleGeom.Clamp(mi, ref r1, ref l1, ref w1, ref a1);
                     var newPorts = ModuleGeom.Ports(mi, r1, l1, w1, a1);
+                    // 곡선 고정: 첫 호의 중심이 예전 자리에 남도록 모듈을 옮긴다 → L 만 바뀌면 곡선은 그대로, 직선 다리만 바깥으로 신축
+                    Vector3d shift = ArcAnchor(mi, r0, l0, w0, a0) - ArcAnchor(mi, r1, l1, w1, a1);
                     if (oldPorts.Count == newPorts.Count)
                         for (int k = 0; k < oldPorts.Count; k++)
-                            moves.Add(new KeyValuePair<Point3d, Point3d>(oldPorts[k].TransformBy(xf), newPorts[k].TransformBy(xf)));
+                            moves.Add(new KeyValuePair<Point3d, Point3d>(oldPorts[k].TransformBy(xf), (newPorts[k] + shift).TransformBy(xf)));
                     RailFactory.SetModuleParams(tr, br, r1, l1, w1, a1);
+                    if (shift.Length > 1e-9)
+                    {
+                        if (!br.IsWriteEnabled) br.UpgradeOpen();
+                        br.TransformBy(Matrix3d.Displacement(shift.TransformBy(xf)));
+                    }
                     n++;
                 }
                 FollowPorts(db, tr, moves);
@@ -560,6 +567,37 @@ namespace RailPlugin
             }
             PurgeModuleBlocks(db);
             return n;
+        }
+
+        static List<Tuple<Point3d, double>> WorldArcs(Database db, List<ObjectId> mods)
+        {
+            var res = new List<Tuple<Point3d, double>>();
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                foreach (var id in mods)
+                {
+                    var br = (BlockReference)tr.GetObject(id, OpenMode.ForRead);
+                    var bdef = (BlockTableRecord)tr.GetObject(br.BlockTableRecord, OpenMode.ForRead);
+                    foreach (ObjectId eid in bdef)
+                        if (tr.GetObject(eid, OpenMode.ForRead) is Arc ac)
+                            res.Add(Tuple.Create(ac.Center.TransformBy(br.BlockTransform), ac.Radius));
+                }
+                tr.Commit();
+            }
+            return res;
+        }
+
+        // 모듈 기준 좌표에서 첫 호의 중심 (호가 없으면 원점) — 파라미터를 바꿀 때 곡선 위치를 고정하는 기준
+        static Point3d ArcAnchor(int mi, double r, double l, double w, double a)
+        {
+            Point3d c = Point3d.Origin;
+            bool found = false;
+            foreach (Entity e in ModuleGeom.Build(mi, r, l, w, a))
+            {
+                if (!found && e is Arc ac) { c = ac.Center; found = true; }
+                e.Dispose();
+            }
+            return c;
         }
 
         // 결과 보고용: 마지막 ApplyAll 에서 끝을 옮긴 선 수 / 자동으로 못 이은 곳(호 끝, 모듈끼리 맞닿은 곳)
@@ -576,7 +614,7 @@ namespace RailPlugin
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Database db = doc.Database; Editor ed = doc.Editor;
-            var p = new ModuleParams.P { R = 450, L = 200, W1 = 900, W2 = 1350, A = 45, M1 = 150, M2 = 520 };
+            var p = new ModuleParams.P { R = 450, L = 20, W1 = 900, W2 = 1350, A = 45, M1 = 150, M2 = 520 };
             ModuleParams.Set(db, p);
             var placed = new List<ObjectId>();
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -600,8 +638,14 @@ namespace RailPlugin
                 }
                 tr.Commit();
             }
-            var p2 = p.Clone(); p2.R = 480; p2.L = 300;
+            var arcsBefore = WorldArcs(db, placed);
+            var p2 = p.Clone(); p2.L = 200;                 // 사용자 상황: R·A 그대로, L 20 → 200
             int n = ApplyAll(doc, p, p2, null);
+            var arcsAfter = WorldArcs(db, placed);
+            int arcSame = 0;
+            foreach (var a in arcsBefore)
+                if (arcsAfter.Exists(b => b.Item1.DistanceTo(a.Item1) < 1e-3 && Math.Abs(b.Item2 - a.Item2) < 1e-3)) arcSame++;
+            ed.WriteMessage($"\nRAILMODAPPLYTEST: 곡선 {arcsBefore.Count}개 중 위치·반지름 그대로 {arcSame}개.");
             int ok = 0, bad = 0;
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {

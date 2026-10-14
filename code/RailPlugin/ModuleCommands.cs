@@ -535,6 +535,8 @@ namespace RailPlugin
                 }
                 var moves = new List<KeyValuePair<Point3d, Point3d>>();   // 접속구 예전 위치 → 새 위치
                 var anchors = new List<Point3d>();                          // 그 접속구 모듈의 곡선 기준점(첫 호 중심)
+                var dirs = new List<Vector3d>();                            // 접속구에서 모듈 바깥쪽 방향
+                var owners = new List<int>();                               // 접속구가 속한 모듈 번호
                 foreach (ObjectId id in ids)
                 {
                     var br = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
@@ -553,11 +555,14 @@ namespace RailPlugin
                     // 곡선 고정: 첫 호의 중심이 예전 자리에 남도록 모듈을 옮긴다 → L 만 바뀌면 곡선은 그대로, 직선 다리만 바깥으로 신축
                     Vector3d shift = ArcAnchor(mi, r0, l0, w0, a0) - ArcAnchor(mi, r1, l1, w1, a1);
                     Point3d anchorW = ArcAnchor(mi, r0, l0, w0, a0).TransformBy(xf);
+                    var newDirs = PortDirs(mi, r1, l1, w1, a1, newPorts);
                     if (oldPorts.Count == newPorts.Count)
                         for (int k = 0; k < oldPorts.Count; k++)
                         {
                             moves.Add(new KeyValuePair<Point3d, Point3d>(oldPorts[k].TransformBy(xf), (newPorts[k] + shift).TransformBy(xf)));
                             anchors.Add(anchorW);
+                            dirs.Add(newDirs[k].TransformBy(xf));
+                            owners.Add(n);
                         }
                     RailFactory.SetModuleParams(tr, br, r1, l1, w1, a1);
                     if (shift.Length > 1e-9)
@@ -567,7 +572,7 @@ namespace RailPlugin
                     }
                     n++;
                 }
-                FollowPorts(db, tr, moves, anchors);
+                FollowPorts(db, tr, moves, anchors, dirs, owners);
                 tr.Commit();
             }
             PurgeModuleBlocks(db);
@@ -589,6 +594,31 @@ namespace RailPlugin
                 }
                 tr.Commit();
             }
+            return res;
+        }
+
+        // 접속구마다 모듈 바깥쪽 방향(그 끝을 가진 선·호의 접선, 바깥 향) — Ports 와 같은 순서
+        static List<Vector3d> PortDirs(int mi, double r, double l, double w, double a, List<Point3d> ports)
+        {
+            var ents = ModuleGeom.Build(mi, r, l, w, a);
+            var res = new List<Vector3d>();
+            foreach (var q in ports)
+            {
+                Vector3d d = Vector3d.XAxis;
+                foreach (Entity e in ents)
+                {
+                    var c = e as Curve;
+                    if (c == null) continue;
+                    try
+                    {
+                        if (c.StartPoint.DistanceTo(q) < 1e-5) { d = -c.GetFirstDerivative(c.StartParam).GetNormal(); break; }
+                        if (c.EndPoint.DistanceTo(q) < 1e-5) { d = c.GetFirstDerivative(c.EndParam).GetNormal(); break; }
+                    }
+                    catch { }
+                }
+                res.Add(d);
+            }
+            foreach (Entity e in ents) e.Dispose();
             return res;
         }
 
@@ -756,7 +786,8 @@ namespace RailPlugin
 
         // 모듈 접속구에 붙어 있던 흰색 선(LINE, 열린 폴리선)의 끝을 새 접속구 위치로 옮긴다.
         //  호는 끝만 옮기면 모양이 깨지므로 세기만 한다. 두 모듈의 접속구가 맞닿아 있었는데 새 위치가 다르면 틈으로 센다.
-        static void FollowPorts(Database db, Transaction tr, List<KeyValuePair<Point3d, Point3d>> moves, List<Point3d> anchors)
+        static void FollowPorts(Database db, Transaction tr, List<KeyValuePair<Point3d, Point3d>> moves, List<Point3d> anchors,
+                                List<Vector3d> dirs, List<int> owners)
         {
             const double TOL = 1.0;
             LastLinesMoved = LastArcsLeft = LastModuleGaps = LastBridged = LastLinesRemoved = 0;
@@ -766,17 +797,24 @@ namespace RailPlugin
                     if (m.Key.DistanceTo(q) <= TOL) return m.Value;
                 return null;
             };
-            // 모듈끼리 직접 맞닿아 있던 접속구: 둘 다 곡선 쪽으로 물러났으면(다리가 짧아짐) 그 틈은 직선 레일 → 흰 선으로 잇는다.
-            //  한쪽이라도 바깥으로 나갔으면(다리가 길어짐) 서로 파고든 것 → 잇지 않고 센다(겹침은 빨간색으로 보인다).
+            // 같은 직선 위에서 서로 마주 보는 두 모듈의 접속구: 반영 전엔 맞닿거나 다리가 포개져 있었는데(틈 ≤ 0)
+            //  반영 후 벌어졌으면(다리가 짧아짐) 그 사이는 직선 레일 → 흰 선으로 잇는다.
+            //  맞닿아 있던 쌍이 서로 파고들게 되면(다리가 길어짐) 잇지 않고 센다(겹침은 빨간색으로 보인다).
             var bridges = new List<KeyValuePair<Point3d, Point3d>>();
             for (int i = 0; i < moves.Count; i++)
                 for (int j = i + 1; j < moves.Count; j++)
                 {
-                    if (moves[i].Key.DistanceTo(moves[j].Key) > TOL || moves[i].Value.DistanceTo(moves[j].Value) <= TOL) continue;
-                    bool backI = anchors[i].DistanceTo(moves[i].Value) < anchors[i].DistanceTo(moves[i].Key) - 1e-6;
-                    bool backJ = anchors[j].DistanceTo(moves[j].Value) < anchors[j].DistanceTo(moves[j].Key) - 1e-6;
-                    if (backI && backJ) bridges.Add(new KeyValuePair<Point3d, Point3d>(moves[i].Value, moves[j].Value));
-                    else LastModuleGaps++;
+                    if (owners[i] == owners[j]) continue;
+                    Vector3d di = dirs[i], dj = dirs[j];
+                    if (di.DotProduct(dj) > -0.999) continue;                       // 마주 보지 않음
+                    Vector3d oldV = moves[j].Key - moves[i].Key, newV = moves[j].Value - moves[i].Value;
+                    if ((oldV - di * oldV.DotProduct(di)).Length > TOL) continue;     // 같은 직선 위가 아님(예전)
+                    if ((newV - di * newV.DotProduct(di)).Length > TOL) continue;     // 같은 직선 위가 아님(새)
+                    double oldGap = oldV.DotProduct(di), newGap = newV.DotProduct(di);
+                    if (oldGap > TOL) continue;                                       // 예전에도 떨어져 있었음(사이에 흰 선)
+                    if (oldGap < -2 * Math.Max(1.0, moves[i].Key.DistanceTo(anchors[i]))) continue;   // 너무 깊이 포개짐 = 다른 레일
+                    if (newGap > TOL) bridges.Add(new KeyValuePair<Point3d, Point3d>(moves[i].Value, moves[j].Value));
+                    else if (Math.Abs(oldGap) <= TOL && newGap < -TOL) LastModuleGaps++;
                 }
             if (moves.Count == 0) return;
             var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);

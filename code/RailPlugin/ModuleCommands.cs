@@ -1003,7 +1003,7 @@ namespace RailPlugin
         {
             ModuleCommands.PendingModule = _mi;
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc != null) doc.SendStringToExecute("RAILMOD ", true, false, true);
+            if (doc != null) doc.SendStringToExecute("RAILMOD ", true, false, false);   // 명령 줄에 명령 이름을 찍지 않는다
         }
     }
 

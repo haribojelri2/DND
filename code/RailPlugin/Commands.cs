@@ -889,7 +889,7 @@ namespace RailPlugin
         public void Execute(object p)
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc != null) doc.SendStringToExecute(_cmd + " ", true, false, true);
+            if (doc != null) doc.SendStringToExecute(_cmd + " ", true, false, false);   // 명령 줄에 명령 이름을 찍지 않는다
         }
     }
 
@@ -919,7 +919,7 @@ namespace RailPlugin
         {
             BlockRailCommands.PendingVariant = _vi;
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc != null) doc.SendStringToExecute("DRAWRAILV ", true, false, true);
+            if (doc != null) doc.SendStringToExecute("DRAWRAILV ", true, false, false);   // 명령 줄에 명령 이름을 찍지 않는다
         }
     }
 
@@ -934,7 +934,7 @@ namespace RailPlugin
         {
             BlockRailCommands.PendingPart = _name;
             Document doc = Application.DocumentManager.MdiActiveDocument;
-            if (doc != null) doc.SendStringToExecute("RAILPART ", true, false, true);
+            if (doc != null) doc.SendStringToExecute("RAILPART ", true, false, false);   // 명령 줄에 명령 이름을 찍지 않는다
         }
     }
 

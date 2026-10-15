@@ -537,6 +537,8 @@ namespace RailPlugin
                 var anchors = new List<Point3d>();                          // 그 접속구 모듈의 곡선 기준점(첫 호 중심)
                 var dirs = new List<Vector3d>();                            // 접속구에서 모듈 바깥쪽 방향
                 var owners = new List<int>();                               // 접속구가 속한 모듈 번호
+                var oldLegs = new List<Tuple<Point3d, Point3d>>();          // L 만 바뀌는 모듈의 옛 직선(월드)
+                var newLegs = new List<Tuple<Point3d, Point3d>>();          // 그 모듈의 새 직선(월드)
                 foreach (ObjectId id in ids)
                 {
                     var br = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
@@ -556,7 +558,16 @@ namespace RailPlugin
                     Vector3d shift = ArcAnchor(mi, r0, l0, w0, a0) - ArcAnchor(mi, r1, l1, w1, a1);
                     Point3d anchorW = ArcAnchor(mi, r0, l0, w0, a0).TransformBy(xf);
                     var newDirs = PortDirs(mi, r1, l1, w1, a1, newPorts);
-                    if (oldPorts.Count == newPorts.Count)
+                    // L 만 바뀌는 모듈: 모듈을 풀어 선·호로 보고(옛 다리 + 흰 선 = 원래 레일), 새 L 모듈이 덮는 직선만 빼고
+                    //  나머지를 흰 선으로 다시 그린다 → 레일 모양 그대로, 모듈 경계만 바뀐다(빈틈·겹침 보정 불필요)
+                    var defM = ModuleGeom.Defs[mi];   // 그 모듈이 쓰는 값만 비교(폭·각도를 안 쓰는 모듈의 저장값은 의미 없음)
+                    bool lOnly = Math.Abs(r1 - r0) < 1e-6 && (!defM.UsesW || Math.Abs(w1 - w0) < 1e-6) && (!defM.UsesA || Math.Abs(a1 - a0) < 1e-6);
+                    if (lOnly)
+                    {
+                        foreach (var s in LineSegs(ModuleGeom.Build(mi, r0, l0, w0, a0), Vector3d.ZAxis * 0, xf)) oldLegs.Add(s);
+                        foreach (var s in LineSegs(ModuleGeom.Build(mi, r1, l1, w1, a1), shift, xf)) newLegs.Add(s);
+                    }
+                    if (!lOnly && oldPorts.Count == newPorts.Count)
                         for (int k = 0; k < oldPorts.Count; k++)
                         {
                             moves.Add(new KeyValuePair<Point3d, Point3d>(oldPorts[k].TransformBy(xf), (newPorts[k] + shift).TransformBy(xf)));
@@ -573,6 +584,7 @@ namespace RailPlugin
                     n++;
                 }
                 FollowPorts(db, tr, moves, anchors, dirs, owners);
+                Recover(db, tr, oldLegs, newLegs);
                 tr.Commit();
             }
             PurgeModuleBlocks(db);
@@ -639,7 +651,8 @@ namespace RailPlugin
         public static int LastLinesMoved, LastArcsLeft, LastModuleGaps, LastBridged, LastLinesRemoved;
 
         static string FollowNote()
-            => (LastLinesMoved > 0 ? $" 붙어 있던 선 {LastLinesMoved}개를 따라 늘였습니다." : "")
+            => (LastRecovered > 0 ? $" 모듈을 풀어 새 L 로 다시 그렸습니다(흰 선 {LastRecovered}개로 정리)." : "")
+             + (LastLinesMoved > 0 ? $" 붙어 있던 선 {LastLinesMoved}개를 따라 늘였습니다." : "")
              + (LastBridged > 0 ? $" 맞닿아 있던 모듈 사이 틈 {LastBridged}곳을 직선으로 이었습니다." : "")
              + (LastLinesRemoved > 0 ? $" 다리가 늘어나 덮인 선 {LastLinesRemoved}개를 지웠습니다." : "")
              + (LastArcsLeft + LastModuleGaps > 0
@@ -664,11 +677,11 @@ namespace RailPlugin
                     placed.Add(id);
                     var br = (BlockReference)tr.GetObject(id, OpenMode.ForRead);
                     var ports = ModuleGeom.Ports(mi, p.R, p.L, p.W1, p.A);
-                    var c = new Point3d(x, 0, 0);
-                    foreach (var q in ports)
+                    var pdirs = PortDirs(mi, p.R, p.L, p.W1, p.A, ports);
+                    for (int qi = 0; qi < ports.Count; qi++)
                     {
-                        Point3d w = q.TransformBy(br.BlockTransform);
-                        Vector3d d = w - c; if (d.Length < 1e-6) d = Vector3d.XAxis; d = d.GetNormal() * 3000;
+                        Point3d w = ports[qi].TransformBy(br.BlockTransform);
+                        Vector3d d = pdirs[qi].TransformBy(br.BlockTransform) * 3000;   // 실제 레일처럼 다리 방향으로 곧게 이어지는 흰 선
                         var ln = new Line(w, w + d);
                         ms.AppendEntity(ln); tr.AddNewlyCreatedDBObject(ln, true);
                     }
@@ -781,6 +794,154 @@ namespace RailPlugin
             var res = new List<Point3d>();
             foreach (var q in ModuleGeom.Ports(RailFactory.GetCount(br), RailFactory.GetModR(br), RailFactory.GetLength(br), RailFactory.GetWidth(br), RailFactory.GetModA(br)))
                 res.Add(q.TransformBy(br.BlockTransform));
+            return res;
+        }
+
+        static IEnumerable<Tuple<Point3d, Point3d>> LineSegs(List<Entity> ents, Vector3d shiftLocal, Matrix3d xf)
+        {
+            var res = new List<Tuple<Point3d, Point3d>>();
+            foreach (Entity e in ents)
+            {
+                if (e is Line ln)
+                    res.Add(Tuple.Create((ln.StartPoint + shiftLocal).TransformBy(xf), (ln.EndPoint + shiftLocal).TransformBy(xf)));
+                e.Dispose();
+            }
+            return res;
+        }
+
+        public static int LastRecovered;
+
+        sealed class LineGroup
+        {
+            public Vector3d U, N; public double C;
+            public List<double[]> OldI = new List<double[]>(), NewI = new List<double[]>();
+            public List<Tuple<ObjectId, double, double, string>> White = new List<Tuple<ObjectId, double, double, string>>();
+        }
+
+        // "모듈 해제 → 새 L 로 다시 그리기": 같은 직선 위의 (옛 모듈 다리 ∪ 거기 이어진 흰 선) 구간에서 새 모듈 다리가 덮는
+        //  부분을 뺀 나머지를 흰 선으로 다시 그린다. 원래 흰 선의 끝점(호가 닿는 곳 등)은 그대로 끊어 둔다.
+        static void Recover(Database db, Transaction tr, List<Tuple<Point3d, Point3d>> oldLegs, List<Tuple<Point3d, Point3d>> newLegs)
+        {
+            const double TOL = 1.0;
+            LastRecovered = 0;
+            if (oldLegs.Count == 0) return;
+            var groups = new List<LineGroup>();
+            Func<Point3d, Point3d, bool, LineGroup> find = (a, b, create) =>
+            {
+                Vector3d u = b - a;
+                if (u.Length < 1e-6) return null;
+                u = u.GetNormal();
+                if (u.X < -1e-9 || (Math.Abs(u.X) <= 1e-9 && u.Y < 0)) u = -u;
+                var nrm = new Vector3d(-u.Y, u.X, 0);
+                double c = nrm.DotProduct(a.GetAsVector());
+                foreach (var g in groups)
+                    if (Math.Abs(g.U.X * u.Y - g.U.Y * u.X) < 1e-7 && Math.Abs(g.C - c) < 0.5) return g;
+                if (!create) return null;
+                var ng = new LineGroup { U = u, N = nrm, C = c };
+                groups.Add(ng);
+                return ng;
+            };
+            Func<LineGroup, Point3d, double> tOf = (g, p) => g.U.DotProduct(p.GetAsVector());
+            foreach (var s in oldLegs) { var g = find(s.Item1, s.Item2, true); if (g != null) g.OldI.Add(Sorted(tOf(g, s.Item1), tOf(g, s.Item2))); }
+            foreach (var s in newLegs) { var g = find(s.Item1, s.Item2, true); if (g != null) g.NewI.Add(Sorted(tOf(g, s.Item1), tOf(g, s.Item2))); }
+
+            var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
+            var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+            foreach (ObjectId id in ms)
+            {
+                if (!(tr.GetObject(id, OpenMode.ForRead) is Line ln) || ln.IsErased) continue;
+                var g = find(ln.StartPoint, ln.EndPoint, false);
+                if (g == null) continue;
+                var iv = Sorted(tOf(g, ln.StartPoint), tOf(g, ln.EndPoint));
+                g.White.Add(Tuple.Create(id, iv[0], iv[1], ln.Layer));
+            }
+
+            foreach (var g in groups)
+            {
+                if (g.OldI.Count == 0) continue;
+                // 옛 다리 구간에서 시작해, 닿거나 겹치는 흰 선을 차례로 붙여 원래 레일 구간을 만든다
+                var comps = Merge(g.OldI, TOL);
+                var used = new List<Tuple<ObjectId, double, double, string>>();
+                bool grew = true;
+                while (grew)
+                {
+                    grew = false;
+                    foreach (var w in g.White)
+                    {
+                        if (used.Contains(w)) continue;
+                        if (comps.Exists(c => w.Item2 <= c[1] + TOL && w.Item3 >= c[0] - TOL))
+                        {
+                            used.Add(w);
+                            comps.Add(new[] { w.Item2, w.Item3 });
+                            comps = Merge(comps, TOL);
+                            grew = true;
+                        }
+                    }
+                }
+                // 남길 구간 = 원래 레일 구간 − 새 모듈 다리. 원래 흰 선 끝점에서는 끊어 둔다.
+                var newI = Merge(g.NewI, TOL);
+                var cuts = new List<double>();
+                foreach (var w in used) { cuts.Add(w.Item2); cuts.Add(w.Item3); }
+                string layer = used.Count > 0 ? used[0].Item4 : "0";
+                foreach (var w in used)
+                {
+                    var e = (Entity)tr.GetObject(w.Item1, OpenMode.ForWrite);
+                    e.Erase();
+                }
+                foreach (var c in comps)
+                    foreach (var piece in Subtract(c, newI, TOL))
+                        foreach (var sp in SplitAt(piece, cuts, TOL))
+                        {
+                            if (sp[1] - sp[0] <= TOL) continue;
+                            Point3d a = Point3d.Origin + g.N * g.C + g.U * sp[0];
+                            Point3d b = Point3d.Origin + g.N * g.C + g.U * sp[1];
+                            var nl = new Line(a, b) { Layer = layer };
+                            ms.AppendEntity(nl);
+                            tr.AddNewlyCreatedDBObject(nl, true);
+                            LastRecovered++;
+                        }
+            }
+        }
+
+        static double[] Sorted(double a, double b) => a <= b ? new[] { a, b } : new[] { b, a };
+
+        static List<double[]> Merge(List<double[]> iv, double tol)
+        {
+            var s = iv.OrderBy(x => x[0]).ToList();
+            var res = new List<double[]>();
+            foreach (var x in s)
+            {
+                if (res.Count > 0 && x[0] <= res[res.Count - 1][1] + tol)
+                    res[res.Count - 1][1] = Math.Max(res[res.Count - 1][1], x[1]);
+                else res.Add(new[] { x[0], x[1] });
+            }
+            return res;
+        }
+
+        static List<double[]> Subtract(double[] c, List<double[]> holes, double tol)
+        {
+            var res = new List<double[]> { new[] { c[0], c[1] } };
+            foreach (var h in holes)
+            {
+                var next = new List<double[]>();
+                foreach (var r in res)
+                {
+                    if (h[1] <= r[0] + tol || h[0] >= r[1] - tol) { next.Add(r); continue; }
+                    if (h[0] > r[0] + tol) next.Add(new[] { r[0], h[0] });
+                    if (h[1] < r[1] - tol) next.Add(new[] { h[1], r[1] });
+                }
+                res = next;
+            }
+            return res;
+        }
+
+        static List<double[]> SplitAt(double[] r, List<double> cuts, double tol)
+        {
+            var pts = new List<double> { r[0] };
+            foreach (var c in cuts.OrderBy(x => x)) if (c > pts[pts.Count - 1] + tol && c < r[1] - tol) pts.Add(c);
+            pts.Add(r[1]);
+            var res = new List<double[]>();
+            for (int i = 0; i + 1 < pts.Count; i++) res.Add(new[] { pts[i], pts[i + 1] });
             return res;
         }
 

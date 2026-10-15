@@ -587,9 +587,12 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
 
     links: List[MapLink] = []
 
-    def new_link(t, a, b, length):
+    away = []      # 링크별 (시작 NODE 에서 링크가 뻗는 방향, 끝 NODE 에서 링크가 뻗는 방향) — 방향 정리용
+
+    def new_link(t, a, b, length, va=None, vb=None):
         links.append(MapLink(id=f"{len(links) + 1:06d}", type=t, start_node_id=a, end_node_id=b,
                              length=int(round(length))))
+        away.append((va, vb))
 
     # 모듈 안 링크
     merged_paths = {(id(x[0]), id(x[2])) for x in merged} | {(id(x[3]), id(x[5])) for x in merged}
@@ -611,7 +614,7 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
                 typ = "L" if cross(ein, eout) > 0 else "R"
             else:
                 typ = {"line": "S", "arch": "U", "cross": "N"}[t]
-            new_link(typ, nid[(m.id, a)], nid[(m.id, b)], ln)
+            new_link(typ, nid[(m.id, a)], nid[(m.id, b)], ln, mul(sa.out, -1.0), mul(sb.out, -1.0))
 
     # 합쳐진 곡선 링크
     for mA, iA, pA, mB, iB, pB, g in merged:
@@ -625,7 +628,8 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         ein = mul(src[0].slots[src[1]].out, -1.0)
         eout = dst[0].slots[dst[1]].out
         typ = "U" if dot(ein, eout) < -0.5 else "N"
-        new_link(typ, nid[(src[0].id, src[1])], nid[(dst[0].id, dst[1])], ln)
+        new_link(typ, nid[(src[0].id, src[1])], nid[(dst[0].id, dst[1])], ln,
+                 mul(src[0].slots[src[1]].out, -1.0), mul(dst[0].slots[dst[1]].out, -1.0))
 
     # 모듈 사이 직선
     def exits_at(m, i) -> Optional[bool]:
@@ -652,7 +656,8 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
             fw = ex if ex is not None else (not exits_at(mB, iB) if exits_at(mB, iB) is not None else True)
         if fw is False:
             a, b = b, a
-        new_link("S", nid[(a[0].id, a[1])], nid[(b[0].id, b[1])], max(ln, 0.0))
+        new_link("S", nid[(a[0].id, a[1])], nid[(b[0].id, b[1])], max(ln, 0.0),
+                 a[0].slots[a[1]].out, b[0].slots[b[1]].out)
 
     # 7) 모듈과 무관한 형상(모듈 사이 직선 연결에 쓰이지 않은 조각)
     pnode = {}
@@ -697,11 +702,104 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         na, ma_ = plain_node(a)
         nb, mb_ = plain_node(b)
         if kind == "LINE":
-            new_link("S", na, nb, dist(a, b) - ma_ - mb_)
+            new_link("S", na, nb, dist(a, b) - ma_ - mb_, unit(sub(b, a)), unit(sub(a, b)))
         else:
-            new_link("L" if _arc_ccw(e) else "R", na, nb, _arc_len(e) - ma_ - mb_)
+            new_link("L" if _arc_ccw(e) else "R", na, nb, _arc_len(e) - ma_ - mb_,
+                     _arc_away(e, a, b), _arc_away(e, b, a))
 
+    nflip, nconf = orient_links(links, away)
+    if nflip:
+        log(f"진행 방향 정리: 링크 {nflip}개 방향을 바로잡음(분기점·직진 연속 규칙)")
+    if nflip and nconf:
+        _pos = {n.id: (float(n.x), float(n.y)) for n in nodes}
+        _where = ", ".join(f"({_pos[c][0]:.0f},{_pos[c][1]:.0f})" for c in nconf[:5] if c in _pos)
+        warn(f"[확인 필요] 진행 방향 규칙이 서로 맞지 않는 곳 {len(nconf)}군데 {_where} - 도면의 분기 배치를 확인하세요")
     return Result(nodes, links, smods, (R0, L0, W1, W2, A0, M1, M2), warns)
+
+
+def _arc_away(e, p, other) -> Pt:
+    """호 e 의 끝 p 에서 호 몸통 쪽(다른 끝 other 방향)으로 뻗는 접선."""
+    c = _center(e)
+    rad = unit(sub(p, c))
+    tan = (-rad[1], rad[0])
+    return tan if dot(tan, sub(other, p)) > 0 else mul(tan, -1.0)
+
+
+def orient_links(links, away) -> Tuple[int, list]:
+    """링크 진행 방향을 노드 규칙에 맞게 정리한다. 반환 (뒤집은 링크 수, 규칙이 충돌한 NODE id 목록).
+
+    노드마다 붙은 링크를 '뻗는 방향'으로 두 쪽으로 나눈다(첫 링크와 90° 안쪽 = 같은 쪽). 한 쪽은 모두 들어오고
+    다른 쪽은 모두 나가야 한다 - 직진 노드는 한쪽으로 들어와 반대쪽으로 나가고, 분기점은 같은 쪽으로 갈라지는
+    두 링크(직진·곡선)가 함께 나가거나 함께 들어온다. 링크(뒤집을지)와 노드(어느 쪽이 나가는 쪽인지)를 ±1 변수로
+    두고 부호 있는 union-find 로 풀며, 연결된 묶음마다 지금 방향을 덜 뒤집는 쪽을 고른다. L/R 은 뒤집으면 바뀐다."""
+    parent, par = {}, {}
+
+    def find(x):
+        if parent.setdefault(x, x) == x:
+            par.setdefault(x, 1)
+            return x, 1
+        r, p = find(parent[x])
+        parent[x], par[x] = r, par[x] * p
+        return r, par[x]
+
+    conflicts = []
+
+    def union(a, b, p):          # 값(a) = p * 값(b)
+        ra, pa = find(a)
+        rb, pb = find(b)
+        if ra == rb:
+            if pa * pb != p:
+                conflicts.append(b[1])
+            return
+        parent[ra] = rb
+        par[ra] = pa * p * pb
+
+    inc = {}
+    for i, (l, (va, vb)) in enumerate(zip(links, away)):
+        if va is None or vb is None:
+            continue
+        inc.setdefault(l.start_node_id, []).append((i, 1, va))
+        inc.setdefault(l.end_node_id, []).append((i, -1, vb))
+    for n, lst in inc.items():
+        if len(lst) < 2:
+            continue
+        v0 = lst[0][2]
+        sides = [1 if dot(v, v0) > 0 else -1 for _, _, v in lst]
+        if all(sd == 1 for sd in sides):
+            continue                                  # 모두 같은 쪽 - 규칙을 세울 수 없음
+        for (i, s, v), sd in zip(lst, sides):
+            union(("L", i), ("N", n), sd * s)         # 뒤집기 x_i = σ_n · 쪽 · (지금 이 노드에서 나가나)
+    comp = {}
+    for i in range(len(links)):
+        if ("L", i) not in parent:
+            continue
+        r, p = find(("L", i))
+        comp.setdefault(r, []).append((i, p))
+    flips = set()
+    for r, members in comp.items():
+        stay = sum(1 for _, p in members if p == 1)
+        root = 1 if stay >= len(members) - stay else -1
+        flips.update(i for i, p in members if root * p == -1)
+
+    def breaks(flipped):
+        """들어오는 링크나 나가는 링크가 없는 NODE 수(막다른 끝 제외)."""
+        ins, outs = {}, {}
+        for i, l in enumerate(links):
+            s, e = (l.end_node_id, l.start_node_id) if i in flipped else (l.start_node_id, l.end_node_id)
+            outs[s] = outs.get(s, 0) + 1
+            ins[e] = ins.get(e, 0) + 1
+        nodes_ = set(ins) | set(outs)
+        return sum(1 for n in nodes_ if (ins.get(n, 0) == 0) != (outs.get(n, 0) == 0)
+                   and ins.get(n, 0) + outs.get(n, 0) > 1)
+
+    # 안전장치: 다시 맞춘 결과가 원래보다 끊김이 줄지 않으면 원래 방향을 그대로 둔다(어떤 도면도 나빠지지 않게)
+    if not flips or breaks(flips) >= breaks(set()):
+        return 0, conflicts
+    for i in flips:
+        l = links[i]
+        l.start_node_id, l.end_node_id = l.end_node_id, l.start_node_id
+        l.type = {"L": "R", "R": "L"}.get(l.type, l.type)
+    return len(flips), conflicts
 
 
 def module_lines(res: Result) -> List[str]:

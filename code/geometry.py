@@ -454,6 +454,7 @@ def merge_line_segments_at_degree2_nodes(
     split_lines: List[LineSeg],
     arcs: List[ArcSeg],
     tol: float = SNAP_TOL,
+    keep_points: Optional[List[Tuple[float, float]]] = None,
 ) -> List[LineSeg]:
     """Degree-2 노드에서 LINE 세그먼트 병합.
 
@@ -491,8 +492,12 @@ def merge_line_segments_at_degree2_nodes(
             # p1==p2 인 degenerate 세그먼트는 degree에 한 번만 기여
             pass
 
+    # 모듈 접속구(열린 끝)도 남긴다 — 짧은 모듈 다리(L 20 등)가 이어진 흰 선과 한 줄로 합쳐지면 접속구가 선 중간으로
+    #  사라져 모듈 NODE 와 흰 선이 끊긴다
+    keep_nodes: Set[Tuple[float, float]] = {pkey(p) for p in (keep_points or [])}
+
     def is_removable(node_key: Tuple[float, float]) -> bool:
-        if node_key in arc_nodes:
+        if node_key in arc_nodes or node_key in keep_nodes:
             return False
         return len(node_to_lines.get(node_key, [])) == 2
 

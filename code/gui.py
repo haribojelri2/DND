@@ -105,9 +105,17 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         # 모듈 형상은 좌표가 정확하다 - 100mm 스냅을 쓰면 L 이 100 보다 짧은 모듈 다리(예: L 50)가 한 점으로 뭉개져
         #  갈림점·슬롯이 엉키고 이어진 선이 끊긴다. 모듈 도면은 작은 허용 오차로 정리한다.
         #  허용 오차 = 모듈 다리 L 의 0.4 배(20~100mm) — L 200 이면 80, L 50 이면 20. config geom_tol_mm 를 주면 그 값.
+        #  ★L 50 미만(예: L 20)에서는 하한 20 이 다리 길이와 같아져 다리가 한 점으로 뭉개진다 → 하한 1. 모듈 슬롯 허용 오차
+        #   (slot_tol_mm, 기본 20)도 같은 값 이하로 맞춘다 — 둘이 어긋나면 슬롯과 흰 선 끝이 서로 다른 점으로 잡혀 끊긴다.
+        #   L 50 이상이면 둘 다 예전과 같은 값이라 결과가 바뀌지 않는다.
         _gt = module_map.cfg_of(cfg).get("geom_tol_mm")
-        _gt = float(_gt) if _gt not in (None, "", "auto") else max(20.0, 0.4 * float(_dparam[1]))
+        _gt = float(_gt) if _gt not in (None, "", "auto") else max(1.0, 0.4 * float(_dparam[1]))
         SNAP_TOL = INTER_MERGE_TOL = min(SNAP_TOL, _gt)
+        _st = float(module_map.cfg_of(cfg)["slot_tol_mm"])
+        if _st > SNAP_TOL:
+            cfg = dict(cfg)
+            cfg["module_map"] = dict(cfg.get("module_map") or {}, slot_tol_mm=SNAP_TOL)
+            log(f"모듈 슬롯 허용 오차 {_st:g} → {SNAP_TOL:g}mm (L {_dparam[1]:g})")
         log(f"모듈 도면 선·호 정리 허용 오차 {SNAP_TOL:g}mm (L {_dparam[1]:g})")
     _rl = rail_layers if rail_layers else None
     if rail_color is not None:
@@ -125,7 +133,11 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     glue_arc_endpoints_to_lines(split_lines, arcs, tol=max(SNAP_TOL, INTER_MERGE_TOL))
     snap_segments(split_lines, arcs, tol=SNAP_TOL)
     reproject_arcs_to_circle(arcs)
-    split_lines = merge_line_segments_at_degree2_nodes(split_lines, arcs, tol=SNAP_TOL)
+    _keep = None
+    if _modules is not None:
+        # 모듈 접속구는 직선 합치기에서 남긴다(짧은 다리가 흰 선과 합쳐져 접속구가 사라지는 것 방지)
+        _keep = [pt for inst in _modules for pt, _o in module_map._free_ends(inst, 1.0)]
+    split_lines = merge_line_segments_at_degree2_nodes(split_lines, arcs, tol=SNAP_TOL, keep_points=_keep)
     all_segments = split_lines + arcs
     all_segments = clean_edges(all_segments, tolerance=INTER_MERGE_TOL)
     unified_edges = unify_edge_directions(all_segments, tolerance=INTER_MERGE_TOL, start_direction="CCW")

@@ -882,12 +882,9 @@ namespace RailPlugin
                 var newI = Merge(g.NewI, TOL);
                 var cuts = new List<double>();
                 foreach (var w in used) { cuts.Add(w.Item2); cuts.Add(w.Item3); }
-                string layer = used.Count > 0 ? used[0].Item4 : "0";
-                foreach (var w in used)
-                {
-                    var e = (Entity)tr.GetObject(w.Item1, OpenMode.ForWrite);
-                    e.Erase();
-                }
+                // 새 선은 원래 흰 선의 속성(레이어·색·선종류·두께)을 그대로 이어받는다 — 레이어만 맞추면 색이 '레이어 색'으로
+                //  바뀌어(예: RAIL 레이어 빨강) 원래 흰 선과 다르게 보인다. 흰 선이 없던 구간(모듈끼리 맞닿음)은 0 레이어 흰색.
+                Entity tmpl = used.Count > 0 ? (Entity)tr.GetObject(used[0].Item1, OpenMode.ForRead) : null;
                 foreach (var c in comps)
                     foreach (var piece in Subtract(c, newI, TOL))
                         foreach (var sp in SplitAt(piece, cuts, TOL))
@@ -895,11 +892,18 @@ namespace RailPlugin
                             if (sp[1] - sp[0] <= TOL) continue;
                             Point3d a = Point3d.Origin + g.N * g.C + g.U * sp[0];
                             Point3d b = Point3d.Origin + g.N * g.C + g.U * sp[1];
-                            var nl = new Line(a, b) { Layer = layer };
+                            var nl = new Line(a, b);
+                            if (tmpl != null) nl.SetPropertiesFrom(tmpl);
+                            else { nl.Layer = "0"; nl.ColorIndex = 7; }
                             ms.AppendEntity(nl);
                             tr.AddNewlyCreatedDBObject(nl, true);
                             LastRecovered++;
                         }
+                foreach (var w in used)
+                {
+                    var e = (Entity)tr.GetObject(w.Item1, OpenMode.ForWrite);
+                    e.Erase();
+                }
             }
         }
 

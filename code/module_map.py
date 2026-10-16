@@ -53,6 +53,9 @@ MERGEABLE = {"C": {1, 2}, "Y": {2, 3}, "BL": {2}, "BR": {2}}
 # 플러그인이 도면(NOD)에 저장하는 파라미터 XRecord - Real(40) 7개 R/L/W1/W2/A/M1/M2
 PARAM_KEY = "RAILPLUGIN_MODULEPARAM"
 
+# 마지막 build 에서 찾은 "합칠 수 없는 마진 겹침" 위치 — CAD 플러그인 [마진 검사] 가 도면에 표시한다
+LAST_ISSUES: List[dict] = []
+
 
 def read_drawing_param(doc) -> Optional[Tuple[float, ...]]:
     """도면에 저장된 모듈 파라미터 (R, L, W1, W2, A, M1, M2). 없거나 값이 모자라면 None."""
@@ -358,6 +361,7 @@ class Result:
 
 
 def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=print) -> Result:
+    LAST_ISSUES.clear()
     """margins = (M1, M2): CAD 도면에 저장된 값만 쓴다(CAD 모듈 형상에는 반영 안 하고 MAP 에만 반영)."""
     from map_exporter import MapNode, MapLink
 
@@ -549,6 +553,9 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         okB = (iB + 1) in MERGEABLE.get(mB.type, set())
         if not (okA and okB):
             p = mA.slots[iA].pos
+            q = mB.slots[iB].pos
+            LAST_ISSUES.append({"x": (p[0] + q[0]) / 2, "y": (p[1] + q[1]) / 2, "gap": round(g), "need": round(need),
+                                "text": f"마진 겹침 {mA.type}{iA + 1}-{mB.type}{iB + 1} 간격 {g:.0f} < 마진 합 {need:.0f}"})
             warn(f"[확인 필요] 마진 겹침 ({p[0]:.0f}, {p[1]:.0f}): 모듈 {mA.id}({mA.type}) 슬롯{iA + 1} ↔ "
                  f"모듈 {mB.id}({mB.type}) 슬롯{iB + 1} 간격 {g:.0f} mm 가 마진 합 {need:.0f} mm 보다 짧음 - "
                  f"마진(M1·M2) 설정 또는 도면의 두 모듈 간격을 확인하세요")

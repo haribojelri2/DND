@@ -994,11 +994,7 @@ namespace RailPlugin
                 srcB.Items.Add(MakeButton("폭\n변경", "RAILW", 0));
                 // 구버전 라인 레일(DRAWRAIL2/3, 파츠 미포함)은 리본에서 제거 — 명령 타이핑으로만 사용 가능
 
-                // 변환 — CAD→MAP 변환기(DXFtoMAP.exe) 실행. 설치 프로그램이 DLL 옆에 함께 풀어둔다.
-                var srcC = new Autodesk.Windows.RibbonPanelSource { Title = "변환" };
-                var panelC = new Autodesk.Windows.RibbonPanel { Source = srcC };
-                tab.Panels.Add(panelC);
-                srcC.Items.Add(MakeButton("CAD→MAP\n변환기", new Cad2MapHandler(), 6));
+                // CAD→MAP 변환기 버튼은 Module 탭 [변환] 칸으로 옮겼다(모듈 도면만 변환한다)
 
                 rc.Tabs.Add(tab);
             }
@@ -1082,7 +1078,7 @@ namespace RailPlugin
         static Autodesk.Windows.RibbonButton MakeButton(string text, string cmd, int kind)
             => MakeButton(text, new RailCmdHandler(cmd), kind);
 
-        static Autodesk.Windows.RibbonButton MakeButton(string text, System.Windows.Input.ICommand handler, int kind)
+        internal static Autodesk.Windows.RibbonButton MakeButton(string text, System.Windows.Input.ICommand handler, int kind)
         {
             var b = new Autodesk.Windows.RibbonButton
             {

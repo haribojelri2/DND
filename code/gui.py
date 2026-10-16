@@ -1028,7 +1028,35 @@ def _cli_map2cad(argv: list[str]) -> int:
     return 0
 
 
+def _cli_margincheck(argv: list[str]) -> int:
+    """`DXFtoMAP.exe --margincheck <in.dxf> <out.json>` — 창 없이 변환해 '합칠 수 없는 마진 겹침' 위치를 JSON 으로 낸다.
+    CAD 플러그인 [마진 검사] 버튼이 이 결과로 도면에 표시한다. JSON = {"issues":[{x,y,gap,need,text}], "error": 문자열|null}.
+    반환 0 성공, 1 오류, 2 사용법."""
+    args = [a for a in argv if not a.startswith("--")]
+    if len(args) < 2:
+        return 2
+    src, out = args[0], args[1]
+    res = {"issues": [], "error": None}
+    code = 0
+    try:
+        run_pipeline(src, load_cfg(), lambda *a, **k: None)
+        res["issues"] = list(module_map.LAST_ISSUES)
+    except ConvertStopped as e:
+        res["error"] = str(e)
+        code = 1
+    except BaseException as e:
+        res["error"] = f"{type(e).__name__}: {e}"
+        code = 1
+    try:
+        Path(out).write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return 1
+    return code
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--margincheck":
+        sys.exit(_cli_margincheck(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--map2cad":
         sys.exit(_cli_map2cad(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--cad2mod":

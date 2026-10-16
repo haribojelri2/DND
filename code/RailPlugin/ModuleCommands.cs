@@ -1502,6 +1502,7 @@ namespace RailPlugin
                     "선·호 도면(또는 모듈 도면)을 분석해 R·W1·W2·A 를 뽑아 파라미터로 적용합니다"));
                 srcP.Items.Add(MakeCmdButton("도면 모듈에\n일괄 적용", "RAILMODAPPLY",
                     "도면에 이미 그린 모든 모듈을 현재 파라미터로 다시 만듭니다"));
+                srcP.Items.Add(Sep());                       // 파라미터 다루기 | 배치 폭
                 _widthButton = MakeCmdButton("폭\nW1", "RAILMODW",
                     "폭을 쓰는 모듈(U, DOUBLE BRANCH, U BRANCH, N, BY PASS, S)을 W1 / W2 중 어느 폭으로 배치할지 전환합니다. 배치할 때는 묻지 않습니다");
                 srcP.Items.Add(_widthButton);
@@ -1520,10 +1521,22 @@ namespace RailPlugin
                 var srcE = new Autodesk.Windows.RibbonPanelSource { Title = "편집" };
                 srcE.Items.Add(MakeCmdButton("선·호 →\n모듈 치환", "RAILMODCONV",
                     "선·호로 그린 도면을 도면 파라미터 한 세트로 모듈로 바꾼 새 도면(_modules.dxf)을 엽니다. 안 맞는 곳은 흰색 선·호로 남깁니다"));
+                srcE.Items.Add(Sep());
                 srcE.Items.Add(MakeCmdButton("모듈\n삭제", "RAILMODDEL", "선택한 모듈을 지우고 안 쓰는 블록 정의를 정리합니다"));
-                srcE.Items.Add(MakeCmdButton("겹침\n검사", "RAILMODOVERLAP",
-                    "서로 겹쳐 그려진 모듈을 빨간색으로 표시하고, 겹침이 풀린 모듈은 원래 색으로 되돌립니다. 모듈을 놓거나 옮길 때도 자동으로 검사합니다"));
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcE });
+
+                var srcK = new Autodesk.Windows.RibbonPanelSource { Title = "검사" };
+                srcK.Items.Add(MakeCmdButton("마진\n검사", "RAILMODMARGIN",
+                    "마주 보는 모듈 사이가 마진 합(M1·M2)보다 좁아 MAP 노드가 엇갈리는 곳을 자홍색 원으로 표시합니다(CAD→MAP 의 '마진 겹침' 경고와 같은 곳). 다시 누르면 표시를 새로 그립니다"));
+                srcK.Items.Add(Sep());
+                srcK.Items.Add(MakeCmdButton("겹침\n검사", "RAILMODOVERLAP",
+                    "서로 겹쳐 그려진 모듈을 빨간색으로 표시하고, 겹침이 풀린 모듈은 원래 색으로 되돌립니다. 모듈을 놓거나 옮길 때도 자동으로 검사합니다"));
+                tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcK });
+
+                // 변환 — CAD→MAP 변환기(DXFtoMAP.exe). 예전 Rail 탭에서 옮겨 왔다(모듈 도면만 변환하므로 모듈 탭에서 쓴다)
+                var srcV = new Autodesk.Windows.RibbonPanelSource { Title = "변환" };
+                srcV.Items.Add(RibbonBuilder.MakeButton("CAD→MAP\n변환기", new Cad2MapHandler(), 6));
+                tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcV });
 
                 rc.Tabs.Add(tab);
                 RefreshParam();
@@ -1601,6 +1614,10 @@ namespace RailPlugin
             catch { b.ShowImage = false; }
             return b;
         }
+
+        // 칸 안의 버튼 묶음 사이 세로 구분선
+        static Autodesk.Windows.RibbonSeparator Sep()
+            => new Autodesk.Windows.RibbonSeparator { SeparatorStyle = Autodesk.Windows.RibbonSeparatorStyle.Line };
 
         static Autodesk.Windows.RibbonButton MakeCmdButton(string text, string cmd, string tip)
             => new Autodesk.Windows.RibbonButton

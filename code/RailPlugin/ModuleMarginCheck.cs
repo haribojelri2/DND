@@ -129,12 +129,28 @@ namespace RailPlugin
             }
         }
 
+        // 표시 글자 스타일 — 기본 Standard(txt.shx)에는 한글이 없어 "??"로 나온다 → 한글 TrueType 글꼴(맑은 고딕)
+        public const string STYLE = "RAIL_MARGIN_WARN";
+
+        static ObjectId EnsureStyle(Database db, Transaction tr)
+        {
+            var st = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+            if (st.Has(STYLE)) return st[STYLE];
+            st.UpgradeOpen();
+            var rec = new TextStyleTableRecord { Name = STYLE };
+            rec.Font = new Autodesk.AutoCAD.GraphicsInterface.FontDescriptor("Malgun Gothic", false, false, 0, 0);
+            ObjectId id = st.Add(rec);
+            tr.AddNewlyCreatedDBObject(rec, true);
+            return id;
+        }
+
         static int Mark(Database db, List<Issue> issues)
         {
             int n = 0;
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
                 ObjectId layer = EnsureLayer(db, tr);
+                ObjectId style = EnsureStyle(db, tr);
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
                 foreach (var it in issues)
@@ -146,6 +162,7 @@ namespace RailPlugin
                         Position = new Point3d(it.X + RADIUS * 1.1, it.Y + RADIUS * 0.6, 0),
                         Height = TEXT_H,
                         TextString = it.Text,
+                        TextStyleId = style,
                         LayerId = layer,
                     };
                     ms.AppendEntity(t); tr.AddNewlyCreatedDBObject(t, true);

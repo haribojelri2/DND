@@ -555,6 +555,7 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
             p = mA.slots[iA].pos
             q = mB.slots[iB].pos
             LAST_ISSUES.append({"x": (p[0] + q[0]) / 2, "y": (p[1] + q[1]) / 2, "gap": round(g), "need": round(need),
+                                "ha": str(getattr(mA.inst, "handle", "") or ""), "hb": str(getattr(mB.inst, "handle", "") or ""),
                                 "text": f"마진 겹침 {mA.type}{iA + 1}-{mB.type}{iB + 1} 간격 {g:.0f} < 마진 합 {need:.0f}"})
             warn(f"[확인 필요] 마진 겹침 ({p[0]:.0f}, {p[1]:.0f}): 모듈 {mA.id}({mA.type}) 슬롯{iA + 1} ↔ "
                  f"모듈 {mB.id}({mB.type}) 슬롯{iB + 1} 간격 {g:.0f} mm 가 마진 합 {need:.0f} mm 보다 짧음 - "

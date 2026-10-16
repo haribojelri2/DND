@@ -74,7 +74,7 @@ namespace RailPlugin
                      title, true);
         }
 
-        sealed class Issue { public double X, Y; public string Text; }
+        sealed class Issue { public double X, Y; public string Text, Ha, Hb; }
 
         static bool Read(string path, out List<Issue> issues, out string err)
         {
@@ -93,10 +93,18 @@ namespace RailPlugin
                         X = double.Parse(m.Groups[1].Value, inv),
                         Y = double.Parse(m.Groups[2].Value, inv),
                         Text = System.Text.RegularExpressions.Regex.Unescape(m.Groups[3].Value),
+                        Ha = Field(m.Value, "ha"),
+                        Hb = Field(m.Value, "hb"),
                     });
                 return true;
             }
             catch (System.Exception ex) { err = ex.Message; return false; }
+        }
+
+        static string Field(string obj, string key)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(obj, "\"" + key + "\"\\s*:\\s*\"([0-9A-Fa-f]*)\"");
+            return m.Success ? m.Groups[1].Value : "";
         }
 
         static ObjectId EnsureLayer(Database db, Transaction tr)
@@ -144,6 +152,8 @@ namespace RailPlugin
             return id;
         }
 
+        // 겹침에 걸린 두 모듈을 핸들로 찾아 모듈마다 원 하나(모듈 전체를 감쌈) + 설명. 같은 모듈이 여러 겹침에 걸리면 설명을 모은다.
+        //  핸들로 못 찾으면(도면이 바뀜 등) 두 접속구 사이에 작은 원.
         static int Mark(Database db, List<Issue> issues)
         {
             int n = 0;
@@ -153,24 +163,66 @@ namespace RailPlugin
                 ObjectId style = EnsureStyle(db, tr);
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
+                var notes = new Dictionary<ObjectId, List<string>>();
+                var order = new List<ObjectId>();
                 foreach (var it in issues)
                 {
-                    var c = new Circle(new Point3d(it.X, it.Y, 0), Vector3d.ZAxis, RADIUS) { LayerId = layer };
-                    ms.AppendEntity(c); tr.AddNewlyCreatedDBObject(c, true);
-                    var t = new DBText
+                    bool any = false;
+                    foreach (string h in new[] { it.Ha, it.Hb })
                     {
-                        Position = new Point3d(it.X + RADIUS * 1.1, it.Y + RADIUS * 0.6, 0),
-                        Height = TEXT_H,
-                        TextString = it.Text,
-                        TextStyleId = style,
-                        LayerId = layer,
-                    };
-                    ms.AppendEntity(t); tr.AddNewlyCreatedDBObject(t, true);
+                        ObjectId id = ById(db, h);
+                        if (id.IsNull) continue;
+                        any = true;
+                        if (!notes.ContainsKey(id)) { notes[id] = new List<string>(); order.Add(id); }
+                        if (!notes[id].Contains(it.Text)) notes[id].Add(it.Text);
+                    }
+                    if (!any)
+                    {
+                        AddMark(ms, tr, layer, style, new Point3d(it.X, it.Y, 0), RADIUS, new List<string> { it.Text });
+                        n++;
+                    }
+                }
+                foreach (ObjectId id in order)
+                {
+                    var br = (Entity)tr.GetObject(id, OpenMode.ForRead);
+                    Extents3d e;
+                    try { e = br.GeometricExtents; } catch { continue; }
+                    var c = new Point3d((e.MinPoint.X + e.MaxPoint.X) / 2, (e.MinPoint.Y + e.MaxPoint.Y) / 2, 0);
+                    double r = 0.5 * e.MinPoint.DistanceTo(e.MaxPoint) + 150.0;
+                    AddMark(ms, tr, layer, style, c, r, notes[id]);
                     n++;
                 }
                 tr.Commit();
             }
             return n;
+        }
+
+        static ObjectId ById(Database db, string hex)
+        {
+            if (string.IsNullOrEmpty(hex)) return ObjectId.Null;
+            try
+            {
+                ObjectId id;
+                if (db.TryGetObjectId(new Handle(Convert.ToInt64(hex, 16)), out id) && !id.IsErased) return id;
+            }
+            catch { }
+            return ObjectId.Null;
+        }
+
+        static void AddMark(BlockTableRecord ms, Transaction tr, ObjectId layer, ObjectId style, Point3d c, double r, List<string> lines)
+        {
+            var circ = new Circle(c, Vector3d.ZAxis, r) { LayerId = layer };
+            ms.AppendEntity(circ); tr.AddNewlyCreatedDBObject(circ, true);
+            var t = new MText
+            {
+                Location = new Point3d(c.X + r * 0.75, c.Y + r * 0.75, 0),
+                TextHeight = TEXT_H,
+                Contents = string.Join("\\P", lines),         // MText 줄바꿈
+                TextStyleId = style,
+                LayerId = layer,
+                Attachment = AttachmentPoint.BottomLeft,
+            };
+            ms.AppendEntity(t); tr.AddNewlyCreatedDBObject(t, true);
         }
 
         static void Show(string msg, string title, bool warn)

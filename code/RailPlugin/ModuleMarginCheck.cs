@@ -74,7 +74,7 @@ namespace RailPlugin
                      title, true);
         }
 
-        sealed class Issue { public double X, Y; public string Text, Ha, Hb; }
+        sealed class Issue { public double X, Y, Short, Gap; public string Text, Ha, Hb; }   // Short = 마진 합 − 간격(줄여야 할 마진)
 
         static bool Read(string path, out List<Issue> issues, out string err)
         {
@@ -95,11 +95,25 @@ namespace RailPlugin
                         Text = System.Text.RegularExpressions.Regex.Unescape(m.Groups[3].Value),
                         Ha = Field(m.Value, "ha"),
                         Hb = Field(m.Value, "hb"),
+                        Gap = Num(m.Value, "gap", inv),
+                        Short = Num(m.Value, "need", inv) - Num(m.Value, "gap", inv),
                     });
                 return true;
             }
             catch (System.Exception ex) { err = ex.Message; return false; }
         }
+
+        static double Num(string obj, string key, IFormatProvider inv)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(obj, "\"" + key + "\"\\s*:\\s*([-0-9.eE+]+)");
+            return m.Success ? double.Parse(m.Groups[1].Value, inv) : 0.0;
+        }
+
+        // 표시 글자: 마진(M1+M2)을 얼마나 줄여야 겹침이 풀리는지만 짧게
+        //  간격이 0 이하(모듈끼리 맞닿거나 포개짐)면 마진을 0 으로 줄여도 안 풀린다 → 모듈 간격을 벌려야 할 양을 쓴다
+        static string Note(Issue it) => it.Gap <= 0
+            ? $"모듈 {Math.Ceiling(-it.Gap):0}mm 겹침"
+            : $"마진 -{Math.Ceiling(Math.Max(it.Short, 0)):0}mm";
 
         static string Field(string obj, string key)
         {
@@ -163,7 +177,7 @@ namespace RailPlugin
                 ObjectId style = EnsureStyle(db, tr);
                 var bt = (BlockTable)tr.GetObject(db.BlockTableId, OpenMode.ForRead);
                 var ms = (BlockTableRecord)tr.GetObject(bt[BlockTableRecord.ModelSpace], OpenMode.ForWrite);
-                var notes = new Dictionary<ObjectId, List<string>>();
+                var worst = new Dictionary<ObjectId, Issue>();     // 모듈마다 가장 많이 모자란 겹침
                 var order = new List<ObjectId>();
                 foreach (var it in issues)
                 {
@@ -173,12 +187,12 @@ namespace RailPlugin
                         ObjectId id = ById(db, h);
                         if (id.IsNull) continue;
                         any = true;
-                        if (!notes.ContainsKey(id)) { notes[id] = new List<string>(); order.Add(id); }
-                        if (!notes[id].Contains(it.Text)) notes[id].Add(it.Text);
+                        if (!worst.ContainsKey(id)) { worst[id] = it; order.Add(id); }
+                        else if (it.Short > worst[id].Short) worst[id] = it;
                     }
                     if (!any)
                     {
-                        AddMark(ms, tr, layer, style, new Point3d(it.X, it.Y, 0), RADIUS, new List<string> { it.Text });
+                        AddMark(ms, tr, layer, style, new Point3d(it.X, it.Y, 0), RADIUS, Note(it));
                         n++;
                     }
                 }
@@ -189,7 +203,7 @@ namespace RailPlugin
                     try { e = br.GeometricExtents; } catch { continue; }
                     var c = new Point3d((e.MinPoint.X + e.MaxPoint.X) / 2, (e.MinPoint.Y + e.MaxPoint.Y) / 2, 0);
                     double r = 0.5 * e.MinPoint.DistanceTo(e.MaxPoint) + 150.0;
-                    AddMark(ms, tr, layer, style, c, r, notes[id]);
+                    AddMark(ms, tr, layer, style, c, r, Note(worst[id]));
                     n++;
                 }
                 tr.Commit();
@@ -209,18 +223,17 @@ namespace RailPlugin
             return ObjectId.Null;
         }
 
-        static void AddMark(BlockTableRecord ms, Transaction tr, ObjectId layer, ObjectId style, Point3d c, double r, List<string> lines)
+        static void AddMark(BlockTableRecord ms, Transaction tr, ObjectId layer, ObjectId style, Point3d c, double r, string note)
         {
             var circ = new Circle(c, Vector3d.ZAxis, r) { LayerId = layer };
             ms.AppendEntity(circ); tr.AddNewlyCreatedDBObject(circ, true);
-            var t = new MText
+            var t = new DBText
             {
-                Location = new Point3d(c.X + r * 0.75, c.Y + r * 0.75, 0),
-                TextHeight = TEXT_H,
-                Contents = string.Join("\\P", lines),         // MText 줄바꿈
+                Position = new Point3d(c.X + r * 0.75, c.Y + r * 0.75, 0),
+                Height = TEXT_H,
+                TextString = note,
                 TextStyleId = style,
                 LayerId = layer,
-                Attachment = AttachmentPoint.BottomLeft,
             };
             ms.AppendEntity(t); tr.AddNewlyCreatedDBObject(t, true);
         }

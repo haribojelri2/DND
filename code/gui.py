@@ -21,7 +21,9 @@ from part_counter import (count_parts, count_geometry, save_parts_csv,
                           summary_text, table_lines)
 from map_to_cad import map_to_dxf, NotModuleMap
 from module_judge import ModuleJudge, decide_modules
+import module_judge as mj
 import module_map
+import math
 # 최종 맵 역변환(final_to_cad)은 형상 복원 방식이 달라 GUI 에서 뺐다 — CLI 로만 사용
 
 
@@ -108,8 +110,19 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         #  ★L 50 미만(예: L 20)에서는 하한 20 이 다리 길이와 같아져 다리가 한 점으로 뭉개진다 → 하한 1. 모듈 슬롯 허용 오차
         #   (slot_tol_mm, 기본 20)도 같은 값 이하로 맞춘다 — 둘이 어긋나면 슬롯과 흰 선 끝이 서로 다른 점으로 잡혀 끊긴다.
         #   L 50 이상이면 둘 다 예전과 같은 값이라 결과가 바뀌지 않는다.
+        #  ★차선 이동 모듈(N·BY PASS·S)의 호는 레인에서 R(1−cos A) 만큼만 떨어진다(R 400·A 30 이면 54mm).
+        #   허용 오차가 이보다 크면 호 끝이 레인 위 점으로 붙어 대각 경로가 한 번 더 생기고 막다른 NODE 가 된다
+        #   → 허용 오차를 그 높이의 0.4 배 이하로도 제한한다.
         _gt = module_map.cfg_of(cfg).get("geom_tol_mm")
-        _gt = float(_gt) if _gt not in (None, "", "auto") else max(1.0, 0.4 * float(_dparam[1]))
+        if _gt not in (None, "", "auto"):
+            _gt = float(_gt)
+        else:
+            _gt = 0.4 * float(_dparam[1])
+            _rises = [m.R * (1.0 - math.cos(math.radians(m.A))) for m in _modules
+                      if mj.DEFS[m.idx][2] and m.R > 0 and 0 < m.A < 90]
+            if _rises:
+                _gt = min(_gt, 0.4 * min(_rises))
+            _gt = max(1.0, _gt)
         SNAP_TOL = INTER_MERGE_TOL = min(SNAP_TOL, _gt)
         _st = float(module_map.cfg_of(cfg)["slot_tol_mm"])
         if _st > SNAP_TOL:

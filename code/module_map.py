@@ -718,11 +718,37 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
     nflip, nconf = orient_links(links, away)
     if nflip:
         log(f"진행 방향 정리: 링크 {nflip}개 방향을 바로잡음(분기점·직진 연속 규칙)")
+    # 전체 회전 방향을 사용자가 고른 진행 방향(config io.direction, CCW/CW)에 맞춘다. 첫 방향 잡기(가장 바깥 NODE 부터
+    #  탐색)는 허용 오차가 조금만 달라도 시작점이 바뀌어 반대 방향으로 잡힐 수 있고, 위의 정리는 "덜 뒤집는 쪽"을 골라
+    #  그대로 둔다. 모든 링크를 함께 뒤집으므로 끊김 수는 그대로다.
+    _want = str(((cfg or {}).get("io") or {}).get("direction", "CCW")).upper()
+    _rot = _rotation(nodes, links) if links else 0.0
+    if (_want == "CW" and _rot > 0) or (_want != "CW" and _rot < 0):
+        for l in links:
+            l.start_node_id, l.end_node_id = l.end_node_id, l.start_node_id
+            l.type = {"L": "R", "R": "L"}.get(l.type, l.type)
+        log(f"진행 방향 정리: 전체 회전이 설정({_want})과 반대로 잡혀 전체를 뒤집음")
     if nflip and nconf:
         _pos = {n.id: (float(n.x), float(n.y)) for n in nodes}
         _where = ", ".join(f"({_pos[c][0]:.0f},{_pos[c][1]:.0f})" for c in nconf[:5] if c in _pos)
         warn(f"[확인 필요] 진행 방향 규칙이 서로 맞지 않는 곳 {len(nconf)}군데 {_where} - 도면의 분기 배치를 확인하세요")
     return Result(nodes, links, smods, (R0, L0, W1, W2, A0, M1, M2), warns)
+
+
+def _rotation(nodes, links) -> float:
+    """MAP 전체의 회전 방향: 중심에 대한 링크 외적 합. 양수 = 반시계(CCW). 바깥 순환 루프가 합을 좌우한다."""
+    pos = {n.id: (float(n.x), float(n.y)) for n in nodes}
+    pts = [pos[i] for l in links for i in (l.start_node_id, l.end_node_id) if i in pos]
+    if not pts:
+        return 0.0
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+    s = 0.0
+    for l in links:
+        a, b = pos.get(l.start_node_id), pos.get(l.end_node_id)
+        if a and b:
+            s += (a[0] - cx) * (b[1] - cy) - (a[1] - cy) * (b[0] - cx)
+    return s
 
 
 def _arc_away(e, p, other) -> Pt:

@@ -833,8 +833,31 @@ def orient_links(links, away) -> Tuple[int, list]:
         return sum(1 for n in nodes_ if (ins.get(n, 0) == 0) != (outs.get(n, 0) == 0)
                    and ins.get(n, 0) + outs.get(n, 0) > 1)
 
-    # 안전장치: 다시 맞춘 결과가 원래보다 끊김이 줄지 않으면 원래 방향을 그대로 둔다(어떤 도면도 나빠지지 않게)
-    if not flips or breaks(flips) >= breaks(set()):
+    def violations(flipped):
+        """쪽 규칙을 어긴 NODE 수: 한 쪽에 들어오는 링크와 나가는 링크가 섞였거나, 두 쪽이 같은 방향(둘 다 들어옴/나감).
+        들어오고 나가는 링크가 모두 있어 끊김으로는 안 세지지만 갈래에서 갈래로 꺾어 가는 길이 되는 곳
+        (예: Y 의 두 곡선이 ③→①→② 로 이어짐)을 잡는다."""
+        bad = 0
+        for n, lst in inc.items():
+            if len(lst) < 2:
+                continue
+            v0 = lst[0][2]
+            sides = [1 if dot(v, v0) > 0 else -1 for _, _, v in lst]
+            if all(sd == 1 for sd in sides):
+                continue
+            outs_by_side = {1: set(), -1: set()}
+            for (i, sgn, _v), sd in zip(lst, sides):
+                out = (sgn == 1) != (i in flipped)          # 이 노드에서 나가는가
+                outs_by_side[sd].add(out)
+            a, b = outs_by_side[1], outs_by_side[-1]
+            if len(a) > 1 or len(b) > 1 or (a and b and a == b):
+                bad += 1
+        return bad
+
+    # 안전장치: 끊김과 쪽 규칙 위반이 둘 다 나빠지지 않고 하나라도 줄 때만 적용한다(어떤 도면도 나빠지지 않게)
+    b0, b1 = breaks(set()), breaks(flips) if flips else None
+    v0_, v1_ = violations(set()), violations(flips) if flips else None
+    if not flips or b1 > b0 or v1_ > v0_ or (b1 == b0 and v1_ == v0_):
         return 0, conflicts
     for i in flips:
         l = links[i]

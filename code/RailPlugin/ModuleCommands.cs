@@ -119,11 +119,70 @@ namespace RailPlugin
         }
     }
 
+    // 회사(고객사)별 파라미터 Template — 회사 이름마다 R/L/W1/W2/A/M1/M2 한 세트.
+    //  %APPDATA%\RailPlugin\module_templates.txt 한 파일(UTF-8, 한 줄 = 이름 TAB 값 7개). AutoCAD·ZWCAD 판이 같은 파일을 쓴다.
+    //  도면에 저장되는 값(ModuleParams)과 별개 — 불러오면 대화상자 입력칸만 채우고, [적용]해야 도면에 저장된다.
+    public static class ModuleTemplates
+    {
+        public static string FilePath => System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RailPlugin", "module_templates.txt");
+
+        public static List<KeyValuePair<string, ModuleParams.P>> Load()
+        {
+            var list = new List<KeyValuePair<string, ModuleParams.P>>();
+            try
+            {
+                if (!System.IO.File.Exists(FilePath)) return list;
+                foreach (string raw in System.IO.File.ReadAllLines(FilePath, System.Text.Encoding.UTF8))
+                {
+                    string[] f = raw.Split('\t');
+                    if (f.Length < 8 || f[0].Trim().Length == 0) continue;
+                    var v = new double[7];
+                    bool ok = true;
+                    for (int i = 0; i < 7; i++)
+                        ok &= double.TryParse(f[i + 1], NumberStyles.Float, CultureInfo.InvariantCulture, out v[i]);
+                    if (!ok) continue;
+                    list.Add(new KeyValuePair<string, ModuleParams.P>(f[0].Trim(),
+                        new ModuleParams.P { R = v[0], L = v[1], W1 = v[2], W2 = v[3], A = v[4], M1 = v[5], M2 = v[6] }));
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        static void Write(List<KeyValuePair<string, ModuleParams.P>> list)
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(FilePath));
+            var lines = list.OrderBy(kv => kv.Key, StringComparer.CurrentCulture).Select(kv => string.Join("\t", new[] {
+                kv.Key, ModuleParams.F(kv.Value.R), ModuleParams.F(kv.Value.L), ModuleParams.F(kv.Value.W1), ModuleParams.F(kv.Value.W2),
+                ModuleParams.F(kv.Value.A), ModuleParams.F(kv.Value.M1), ModuleParams.F(kv.Value.M2) }));
+            System.IO.File.WriteAllLines(FilePath, lines, new System.Text.UTF8Encoding(true));
+        }
+
+        /// <summary>같은 이름이 있으면 덮어쓴다.</summary>
+        public static void Put(string name, ModuleParams.P p)
+        {
+            var list = Load().Where(kv => !string.Equals(kv.Key, name, StringComparison.CurrentCultureIgnoreCase)).ToList();
+            list.Add(new KeyValuePair<string, ModuleParams.P>(name, p.Clone()));
+            Write(list);
+        }
+
+        public static bool Remove(string name)
+        {
+            var all = Load();
+            var list = all.Where(kv => !string.Equals(kv.Key, name, StringComparison.CurrentCultureIgnoreCase)).ToList();
+            if (list.Count == all.Count) return false;
+            Write(list);
+            return true;
+        }
+    }
+
     // 파라미터 대화상자 — XAML 없이 코드로만 구성(포팅 스크립트가 .cs 만 옮기므로 ZWCAD 판에도 그대로 간다).
     public class ModuleParamDialog : System.Windows.Window
     {
         readonly System.Windows.Controls.TextBox[] _box = new System.Windows.Controls.TextBox[7];
         readonly System.Windows.Controls.CheckBox _applyAll;
+        System.Windows.Controls.ComboBox _tpl;
         public ModuleParams.P Value;
         public bool ApplyToExisting;
 
@@ -166,6 +225,25 @@ namespace RailPlugin
                     Margin = new System.Windows.Thickness(2, 0, 0, 14),
                 });
 
+            // 회사별 Template: [이름 ▼] [불러오기] [저장] [삭제]
+            root.Children.Add(new System.Windows.Controls.TextBlock
+            { Text = "회사별 Template", Foreground = Muted, Margin = new System.Windows.Thickness(2, 0, 0, 5) });
+            var tplRow = new System.Windows.Controls.DockPanel { Margin = new System.Windows.Thickness(0, 0, 0, 16), LastChildFill = true };
+            var tplDel = SmallBtn("삭제"); var tplSave = SmallBtn("저장"); var tplLoad = SmallBtn("불러오기");
+            foreach (var b in new[] { tplDel, tplSave, tplLoad })
+            {
+                System.Windows.Controls.DockPanel.SetDock(b, System.Windows.Controls.Dock.Right);
+                tplRow.Children.Add(b);
+            }
+            _tpl = new System.Windows.Controls.ComboBox { IsEditable = true, Padding = new System.Windows.Thickness(6, 5, 6, 5),
+                ToolTip = "회사 이름을 고르거나 새 이름을 입력하세요" };
+            tplRow.Children.Add(_tpl);
+            root.Children.Add(tplRow);
+            RefreshTemplates(null);
+            tplLoad.Click += (s, e) => LoadTemplate();
+            tplSave.Click += (s, e) => SaveTemplate();
+            tplDel.Click += (s, e) => DeleteTemplate();
+
             var grid = new System.Windows.Controls.Grid();
             grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition());
             grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new System.Windows.GridLength(14) });
@@ -194,8 +272,9 @@ namespace RailPlugin
 
             root.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "※ R·L 은 모든 모듈 공통, W1·W2 는 폭을 쓰는 모듈(U·DOUBLE BRANCH·U BRANCH·N·BY PASS·S)이 배치할 때 "
-                     + "둘 중 하나를 고릅니다. A 는 대각(N·BY PASS·S) 모듈. M1·M2 는 MAP 이격 마진(형상에는 안 씀).",
+                Text = "※ R·L 은 모든 모듈 공통. W1·W2 는 특수 분기(N·BY PASS·S)의 평행선 간격 — 배치할 때 둘 중 하나를 고르고, "
+                     + "도면에는 다른 폭도 섞일 수 있습니다. U·DOUBLE BRANCH·U BRANCH 는 W 없이 반원(폭 2R). "
+                     + "A 는 대각(N·BY PASS·S) 모듈. M1·M2 는 MAP 이격 마진(형상에는 안 씀).",
                 Foreground = Muted, FontSize = 11, TextWrapping = System.Windows.TextWrapping.Wrap,
                 Margin = new System.Windows.Thickness(2, 0, 0, 12),
             });
@@ -216,6 +295,69 @@ namespace RailPlugin
             Loaded += (s, e) => { _box[0].Focus(); _box[0].SelectAll(); };
         }
 
+        static System.Windows.Controls.Button SmallBtn(string text)
+            => new System.Windows.Controls.Button
+            {
+                Content = text, Background = Card, Foreground = Fg, BorderBrush = Line,
+                BorderThickness = new System.Windows.Thickness(1), Padding = new System.Windows.Thickness(12, 4, 12, 4),
+                Margin = new System.Windows.Thickness(6, 0, 0, 0),
+            };
+
+        void RefreshTemplates(string select)
+        {
+            _tpl.Items.Clear();
+            foreach (var kv in ModuleTemplates.Load()) _tpl.Items.Add(kv.Key);
+            if (select != null) _tpl.Text = select;
+        }
+
+        /// <summary>입력칸 값을 읽는다. 잘못된 값이면 경고하고 null.</summary>
+        ModuleParams.P ReadBoxes()
+        {
+            var v = new double[7];
+            for (int i = 0; i < 7; i++)
+                if (!ModuleParams.TryParse(_box[i].Text, out v[i])) { Warn(Labels[i] + " 값이 숫자가 아닙니다.", _box[i]); return null; }
+            var p = new ModuleParams.P { R = v[0], L = v[1], W1 = v[2], W2 = v[3], A = v[4], M1 = v[5], M2 = v[6] };
+            string err = ModuleParams.Validate(p);
+            if (err != null) { Warn(err, null); return null; }
+            return p;
+        }
+
+        void LoadTemplate()
+        {
+            string name = (_tpl.Text ?? "").Trim();
+            var hit = ModuleTemplates.Load().FirstOrDefault(kv => string.Equals(kv.Key, name, StringComparison.CurrentCultureIgnoreCase));
+            if (hit.Key == null) { Warn(name.Length == 0 ? "불러올 회사를 고르세요." : $"'{name}' Template 이 없습니다.", null); return; }
+            double[] vals = { hit.Value.R, hit.Value.L, hit.Value.W1, hit.Value.W2, hit.Value.A, hit.Value.M1, hit.Value.M2 };
+            for (int i = 0; i < 7; i++) _box[i].Text = ModuleParams.F(vals[i]);
+        }
+
+        void SaveTemplate()
+        {
+            string name = (_tpl.Text ?? "").Trim();
+            if (name.Length == 0 || name.IndexOf('\t') >= 0) { Warn("저장할 회사 이름을 입력하세요.", null); return; }
+            var p = ReadBoxes();
+            if (p == null) return;
+            bool exists = ModuleTemplates.Load().Any(kv => string.Equals(kv.Key, name, StringComparison.CurrentCultureIgnoreCase));
+            if (exists && System.Windows.MessageBox.Show(this, $"'{name}' Template 을 지금 값으로 덮어쓸까요?", "회사별 Template",
+                    System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question) != System.Windows.MessageBoxResult.Yes)
+                return;
+            try { ModuleTemplates.Put(name, p); }
+            catch (System.Exception ex) { Warn("저장하지 못했습니다: " + ex.Message, null); return; }
+            RefreshTemplates(name);
+        }
+
+        void DeleteTemplate()
+        {
+            string name = (_tpl.Text ?? "").Trim();
+            if (name.Length == 0) return;
+            if (System.Windows.MessageBox.Show(this, $"'{name}' Template 을 지울까요?", "회사별 Template",
+                    System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question) != System.Windows.MessageBoxResult.Yes)
+                return;
+            try { ModuleTemplates.Remove(name); }
+            catch (System.Exception ex) { Warn("지우지 못했습니다: " + ex.Message, null); return; }
+            RefreshTemplates("");
+        }
+
         static System.Windows.Controls.Button Btn(string text, System.Windows.Media.Brush bg, System.Windows.Media.Brush fg)
             => new System.Windows.Controls.Button
             {
@@ -226,12 +368,8 @@ namespace RailPlugin
 
         void OnApply(object sender, System.Windows.RoutedEventArgs e)
         {
-            var v = new double[7];
-            for (int i = 0; i < 7; i++)
-                if (!ModuleParams.TryParse(_box[i].Text, out v[i])) { Warn(Labels[i] + " 값이 숫자가 아닙니다.", _box[i]); return; }
-            var p = new ModuleParams.P { R = v[0], L = v[1], W1 = v[2], W2 = v[3], A = v[4], M1 = v[5], M2 = v[6] };
-            string err = ModuleParams.Validate(p);
-            if (err != null) { Warn(err, null); return; }
+            var p = ReadBoxes();
+            if (p == null) return;
             Value = p;
             ApplyToExisting = _applyAll.IsChecked == true;
             DialogResult = true;
@@ -372,7 +510,7 @@ namespace RailPlugin
                     lines.Add($"도면의 모듈 {mods.Count}개에서 읽음: R {H(hr)} / L {H(hl)}"
                               + (hw.Count > 0 ? $" / 폭 {H(hw)}" : "") + (ha.Count > 0 ? $" / A {H(ha)}" : ""));
                     if (hr.Count > 1 || hl.Count > 1) lines.Add("※ 모듈마다 R·L 이 달라 가장 많은 값을 골랐습니다.");
-                    if (hw.Count > 2) lines.Add($"※ 폭 종류가 {hw.Count}개 — 가장 많은 두 폭만 W1·W2 로 씁니다.");
+                    if (hw.Count > 2) lines.Add($"※ 폭 종류가 {hw.Count}개 — 가장 많은 두 폭을 W1·W2 로 씁니다(다른 폭 모듈은 그 폭 그대로 유지).");
                 }
                 else
                 {
@@ -390,10 +528,11 @@ namespace RailPlugin
                     if (ha.Count > 0) p.A = ha[0].Key;
                     lines.Add($"선 {segs.Count - arcs.Count}개 · 호 {arcs.Count}개 분석 — 호 반지름 {H(hr)}");
                     lines.Add($"되돌림(호-직선-호 180°) {arches}곳, 차선 이동(호-대각-호) {crosses}곳"
-                              + (hw.Count > 0 ? $" — 폭 {H(hw)}" : " — 폭을 찾지 못해 현재 W1·W2 유지")
+                              + (hw.Count > 0 ? $" — 차선 이동 폭 {H(hw)}" : " — 차선 이동 폭을 찾지 못해 현재 W1·W2 유지")
                               + (ha.Count > 0 ? $", 대각 각도 {H(ha)}" : ""));
                     if (hr.Count > 1) lines.Add("※ 호 반지름이 여러 가지라 가장 많은 값을 골랐습니다.");
-                    if (hw.Count > 2) lines.Add($"※ 폭 종류가 {hw.Count}개 — 가장 많은 두 폭만 W1·W2 로 씁니다.");
+                    if (hw.Count > 2) lines.Add($"※ 폭 종류가 {hw.Count}개 — 가장 많은 두 폭을 W1·W2 로 씁니다(다른 폭도 인식·치환됨).");
+                    lines.Add("※ W 는 차선 이동(N·BY PASS·S) 폭만 셉니다. 되돌림(U 계열)은 W 없이 반원입니다.");
                     lines.Add("※ L 과 M1·M2 는 선·호 모양으로 정할 수 없어 현재 값을 유지했습니다.");
                 }
                 tr.Commit();
@@ -447,7 +586,7 @@ namespace RailPlugin
                     double sa = Math.Abs(a.Sweep) * 180 / Math.PI, sb = Math.Abs(partner.Sweep) * 180 / Math.PI;
                     Vector2d chord = Jb - Ja;
                     if (ta == tb && Math.Abs(sa + sb - 180) <= 1.0)
-                    { widths.Add(chord.Length); arches++; }
+                    { arches++; }          // U 계열은 W 없음(반원) — 폭으로 모으지 않는다
                     else if (ta != tb && Math.Abs(sa - sb) <= 1.0 && sa < 89.0)
                     {
                         Vector2d lane = a.TangentAt(Ja);
@@ -519,7 +658,7 @@ namespace RailPlugin
             }
         }
 
-        /// <summary>모듈들을 파라미터로 다시 만든다. 폭은 각 모듈의 현재 폭이 옛 W1·W2 중 가까운 쪽 → 새 W1·W2.</summary>
+        /// <summary>모듈들을 파라미터로 다시 만든다. 폭(N·BY PASS·S)은 옛 W1·W2 와 같으면 새 W1·W2, 아니면 그대로.</summary>
         public static int ApplyAll(Document doc, ModuleParams.P oldP, ModuleParams.P p, IEnumerable<ObjectId> only)
         {
             Database db = doc.Database;
@@ -546,7 +685,8 @@ namespace RailPlugin
                     int mi = RailFactory.GetCount(br);
                     if (mi < 0 || mi >= ModuleGeom.Defs.Length) continue;
                     double w = RailFactory.GetWidth(br);
-                    double nw = Math.Abs(w - oldP.W1) <= Math.Abs(w - oldP.W2) ? p.W1 : p.W2;
+                    // 폭 여러 개 허용: 옛 W1·W2 와 같은 폭(0.5mm 안)만 새 W1·W2 로 바꾸고, 다른 폭은 그 모듈 폭 그대로 둔다
+                    double nw = Math.Abs(w - oldP.W1) <= 0.5 ? p.W1 : Math.Abs(w - oldP.W2) <= 0.5 ? p.W2 : w;
                     double r1 = p.R, l1 = p.L, w1 = ModuleGeom.Defs[mi].UsesW ? nw : p.W1, a1 = p.A;
                     // 예전·새 접속구(같은 순서로 나온다) — 붙어 있던 흰색 선을 따라 옮기기 위해
                     double r0 = RailFactory.GetModR(br), l0 = RailFactory.GetLength(br), w0 = w, a0 = RailFactory.GetModA(br);
@@ -1437,6 +1577,44 @@ namespace RailPlugin
             ed.WriteMessage($"\nRAILMODJOINTEST: D 삭제 후 블록 정의 {purged}개 정리(1 이어야 정상).");
         }
             // 파라미터 일괄 적용·추출 검증: 파라미터 저장 → 15종 배치 → 추출(모듈 XData) → 새 파라미터로 일괄 적용
+        // 헤드리스 검증: U 계열은 W 를 줘도 반원(폭 2R), 특수 분기는 W 그대로, 회사별 Template 저장·읽기·삭제
+        [CommandMethod("RAILMODUTPLTEST")]
+        public void RailModUTplTest()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor; Database db = doc.Database;
+            double R = 450;
+            foreach (string nm in new[] { "U", "DOUBLE BRANCH", "U BRANCH LEFT", "N LEFT", "S RIGHT" })
+            {
+                int mi = Array.FindIndex(ModuleGeom.Defs, d => d.Name == nm);
+                double r = R, l = 200, w = 1350, a = 45;
+                ModuleGeom.Clamp(mi, ref r, ref l, ref w, ref a);
+                var ports = ModuleGeom.Ports(mi, r, l, w, a);
+                double minX = ports.Min(q => q.X), maxX = ports.Max(q => q.X);
+                ed.WriteMessage($"\n{nm}: W 1350 을 줘도 쓰는 폭 {w:0} · 블록 {ModuleGeom.BlockName(mi, r, l, w, a)} · 접속구 가로 범위 {maxX - minX:0}");
+            }
+            string path = ModuleTemplates.FilePath, bak = path + ".testbak";
+            bool had = System.IO.File.Exists(path);
+            if (had) System.IO.File.Copy(path, bak, true);
+            try
+            {
+                ModuleTemplates.Put("테스트A사", new ModuleParams.P { R = 450, L = 200, W1 = 600, W2 = 900, A = 45, M1 = 150, M2 = 520 });
+                ModuleTemplates.Put("테스트B사", new ModuleParams.P { R = 400, L = 20, W1 = 578, W2 = 800, A = 30, M1 = 15, M2 = 30 });
+                ModuleTemplates.Put("테스트A사", new ModuleParams.P { R = 480, L = 200, W1 = 650, W2 = 900, A = 45, M1 = 150, M2 = 520 });
+                var all = ModuleTemplates.Load();
+                var a1 = all.First(kv => kv.Key == "테스트A사").Value; var b1 = all.First(kv => kv.Key == "테스트B사").Value;
+                bool rm = ModuleTemplates.Remove("테스트B사");
+                var after = ModuleTemplates.Load();
+                ed.WriteMessage($"\nTemplate: 저장 2개·같은 이름 덮어쓰기 → A사 {a1.Digest()} / B사 {b1.Digest()} / B사 삭제 {rm} → 남은 테스트 항목 "
+                    + after.Count(kv => kv.Key.StartsWith("테스트")) + "개 (1 기대) · 파일 " + path);
+            }
+            finally
+            {
+                if (had) { System.IO.File.Copy(bak, path, true); System.IO.File.Delete(bak); }
+                else ModuleTemplates.Remove("테스트A사");
+            }
+        }
+
         [CommandMethod("RAILMODPARAMTEST")]
         public void RailModParamTest()
         {

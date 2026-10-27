@@ -10,7 +10,7 @@ namespace RailPlugin
     //  파라미터
     //    R : 호 반지름 (두 직선에 접하는 원의 반지름)
     //    L : 직선(접속 스텁) 길이 — 호 접점 바깥으로 뻗는 직선
-    //    W : 레일 간격(아치 계열) / 가로 이동량(S·N·BY PASS 계열)
+    //    W : 평행선 사이 길이(N·BY PASS·S 만). 아치 계열(U·DOUBLE BRANCH·U BRANCH)은 W 없이 반원(폭 2R)
     //    A : S자 중간 직선과 세로 선 사이의 각도(°) — N·BY PASS·S 계열만 사용
     //
     //  좌표계: 본선은 +Y(위) 방향, 삽입점(0,0) = 좌측 아래 기준점. 좌/우(LEFT/RIGHT)는 +Y 로 진행할 때의 방향.
@@ -43,10 +43,10 @@ namespace RailPlugin
             new Def("CURVE RIGHT",    "CURVE\nRIGHT",    "CURVE R",   true,  false, false),
             new Def("BRANCH LEFT",    "BRANCH\nLEFT",    "BRANCH L",  true,  false, false),
             new Def("BRANCH RIGHT",   "BRANCH\nRIGHT",   "BRANCH R",  true,  false, false),
-            new Def("U",              "U",               "U",         true,  true,  false),
-            new Def("DOUBLE BRANCH",  "DOUBLE\nBRANCH",  "DOUBLE BR", true,  true,  false),
-            new Def("U BRANCH LEFT",  "U BRANCH\nLEFT",  "U BR L",    true,  true,  false),
-            new Def("U BRANCH RIGHT", "U BRANCH\nRIGHT", "U BR R",    true,  true,  false),
+            new Def("U",              "U",               "U",         true,  false, false),
+            new Def("DOUBLE BRANCH",  "DOUBLE\nBRANCH",  "DOUBLE BR", true,  false, false),
+            new Def("U BRANCH LEFT",  "U BRANCH\nLEFT",  "U BR L",    true,  false, false),
+            new Def("U BRANCH RIGHT", "U BRANCH\nRIGHT", "U BR R",    true,  false, false),
             // ── 특수 분기 7종 (R, L, W, A) ──
             new Def("N LEFT",         "N\nLEFT",         "N L",       false, true,  true),
             new Def("N RIGHT",        "N\nRIGHT",        "N R",       false, true,  true),
@@ -71,7 +71,7 @@ namespace RailPlugin
         public const double DEF_A = 45.0;     // 표준 대각 각도
 
         // ── 파라미터 보정 (물리적으로 불가능한 값 방어) ──────────────────────
-        //  아치 계열: W ≥ 2R (호 두 개가 맞닿는 것이 최소)
+        //  아치 계열: W 없음 — 항상 2R (반원)
         //  S 계열   : 0 < A < 90, W ≥ 2R(1−cosA) (대각 길이 d ≥ 0)
         public static void Clamp(int idx, ref double r, ref double l, ref double w, ref double a)
         {
@@ -85,10 +85,18 @@ namespace RailPlugin
                 double wmin = 2.0 * r * (1.0 - Math.Cos(a * D2R));
                 if (w < wmin) w = wmin;
             }
-            else if (def.UsesW)
+            else if (IsArch(idx))
             {
-                if (w < 2.0 * r) w = 2.0 * r;
+                // U 계열(U·DOUBLE BRANCH·U BRANCH)은 W 를 쓰지 않는다 — 아치 = 반지름 R 의 반원(폭 2R).
+                //  (MODULE FORMAT 제안서 표준 분기는 R·L 만, W 는 특수 분기 N·BY PASS·S 의 평행선 사이 길이)
+                w = 2.0 * r;
             }
+        }
+
+        public static bool IsArch(int idx)
+        {
+            string n = Defs[idx].Name;
+            return n == "U" || n == "DOUBLE BRANCH" || n == "U BRANCH LEFT" || n == "U BRANCH RIGHT";
         }
 
         // 모듈 전체 높이(세로 점유) — 그립·검증용

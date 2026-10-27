@@ -18,7 +18,8 @@
 그래도 안 맞으면 그 자리는 바꾸지 않고 경고한다. 모듈이 덮지 않은 선·호는 그대로 남긴다.
 
 도면 파라미터 모드(--param-from-input, 플러그인·GUI 치환 버튼): 입력 도면에 저장된 플러그인 파라미터 한 세트
-(R/L/W1/W2/A/M1/M2)로만 치환한다 - R 같음, 폭 모듈은 W1/W2 중 하나, 대각 모듈은 A, L 은 고정(줄이지 않음).
+(R/L/W1/W2/A/M1/M2)로만 치환한다 - R 같음, 특수 분기(N·BY PASS·S)의 폭은 도면에서 잰 값(W1/W2 와 가까우면 그 값 - 폭 여러 개 허용), 대각은 A, L 은 고정(줄이지 않음).
+U 계열(U·DOUBLE BRANCH·U BRANCH)은 W 를 쓰지 않는 반원(폭 2R) - 넓은 아치는 BRANCH·CURVE 로 내려간다.
 안 맞는 자리는 선·호로 남기고 알린다. 결과 도면에도 같은 파라미터를 기록한다. 파라미터가 없으면 치환하지 않는다.
 """
 from __future__ import annotations
@@ -489,11 +490,17 @@ def conform(cd: Cand, param, tol: float, ang_tol: float = 1.0) -> str:
     cd.R = R0
     idx = next(k for k, d in enumerate(mj.DEFS) if d[0] == cd.name)
     _, uses_w, uses_a = mj.DEFS[idx]
+    if mj.is_arch(idx):
+        # U 계열은 W 를 쓰지 않는 반원(폭 2R). 넓은 아치는 한 단계 아래(BRANCH·CURVE)로 내려간다
+        if abs(cd.W - 2.0 * R0) > tol:
+            return f"아치 폭 {cd.W:.0f} 이 2R {2.0 * R0:g} 과 다름 (U 계열은 반원)"
+        cd.W = 2.0 * R0
     if uses_w:
+        # 특수 분기(N·BY PASS·S)는 폭 여러 개 허용: W1/W2 와 허용 오차 안이면 그 값으로 맞추고,
+        #  아니면 도면에서 잰 폭을 그 모듈의 폭으로 쓴다(모듈마다 XData 에 폭 기록). W1/W2 는 도면 대표 폭일 뿐이다.
         best = min((W1, W2), key=lambda w: abs(cd.W - w))
-        if abs(cd.W - best) > tol:
-            return f"폭 {cd.W:.0f} 이 W1 {W1:g} / W2 {W2:g} 어느 쪽과도 다름"
-        cd.W = best
+        if abs(cd.W - best) <= tol:
+            cd.W = best
     if uses_a:
         if abs(cd.A - A0) > ang_tol:
             return f"대각 각도 {cd.A:.1f}° 가 파라미터 A {A0:g}° 와 다름"
@@ -530,6 +537,12 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     def recognized(alt) -> str:
         """단계 인식: 파라미터(R·W·A)가 맞는가. 안 맞으면 이유."""
         if param is None:
+            for cd in alt:      # 파라미터가 없어도 U 계열은 반원(폭 2R)만
+                idx = next(k for k, d in enumerate(mj.DEFS) if d[0] == cd.name)
+                if mj.is_arch(idx):
+                    if abs(cd.W - 2.0 * cd.R) > tol:
+                        return f"아치 폭 {cd.W:.0f} 이 2R {2.0 * cd.R:g} 과 다름 (U 계열은 반원)"
+                    cd.W = 2.0 * cd.R
             return ""
         for cd in alt:
             why = conform(cd, param, tol)

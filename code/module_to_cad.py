@@ -7,7 +7,8 @@ MAP 의 MODULE 레코드(종류·각도·기준점)와 MODULEPARAM(R/L/W1/W2/A/M
 
   모듈 배치   플러그인 모듈 후보 × 회전 4가지를 놓아 보고, 순방향 대조(module_map.match_module)가
               MAP 의 MODULE 레코드와 **같은 종류·각도·기준점**을 돌려주는 배치만 쓴다(왕복이 어긋나지 않게).
-              폭(W)은 MAP 에 따로 적지 않으므로 W1/W2 중 그 모듈 NODE 좌표(슬롯 + 마진)와 맞는 쪽을 고른다.
+              폭(W)은 MAP 에 따로 적지 않으므로 특수 분기는 W1/W2 중 그 모듈 NODE 좌표(슬롯 + 마진)와 맞는 쪽을 고른다.
+              U 계열은 W 없이 반원(폭 2R).
   모듈 사이   MODULE 레코드의 슬롯 연결("ID-번호")끼리 슬롯 점을 직선으로 잇는다(마진으로 줄어든 S 링크와
               겹침으로 합쳐진 U/N 링크는 모듈 형상 + 이 직선으로 대신한다).
   모듈 밖     모듈 NODE 가 아닌 노드가 낀 링크만 기존 방식으로 되풀고, 슬롯 NODE 쪽 끝은 마진만큼 슬롯까지 늘인다.
@@ -138,7 +139,16 @@ def module_map_to_dxf(map_path, dxf_path=None, *, cfg: Optional[dict] = None, ra
     placed = 0
     for rec in mp.modules:
         uses_w = rec.type in mm.USES_W
-        cand_w = [W1, W2] if uses_w else [W1 or 900.0]
+        # U 계열은 W 없이 반원(폭 2R), 특수 분기는 W1/W2 중 하나, 나머지는 폭과 무관
+        cand_w = [W1, W2] if uses_w else ([2.0 * R] if rec.type in mm.ARCH_TYPES else [W1 or 900.0])
+        if uses_w:
+            # 폭 여러 개 허용: W1/W2 가 아닌 폭은 이 모듈 NODE 끼리의 X·Y 좌표 차이(가이드 규칙 6)에서 후보를 더한다
+            pts = [p for _, p in nodes_of.get(rec.id, [])]
+            for i in range(len(pts)):
+                for j in range(i + 1, len(pts)):
+                    for v in (abs(pts[i][0] - pts[j][0]), abs(pts[i][1] - pts[j][1])):
+                        if 50.0 < v < 4000.0:
+                            cand_w.append(round(v, 1))
         cand_w = [w for w in dict.fromkeys(cand_w) if w > 0] or [900.0]
         best = None
         for W in cand_w:
@@ -159,7 +169,7 @@ def module_map_to_dxf(map_path, dxf_path=None, *, cfg: Optional[dict] = None, ra
             continue
         err, W, (name, ins, rot, sm) = best
         if err > 1.0 * max(1, len(nodes_of.get(rec.id, []))):
-            warns.append(f"모듈 {rec.id}({rec.type}) NODE 와 슬롯 위치가 {err:.0f}mm 어긋남 - 폭이 W1/W2 가 아닐 수 있음")
+            warns.append(f"모듈 {rec.id}({rec.type}) NODE 와 슬롯 위치가 {err:.0f}mm 어긋남 - 폭·형상을 확인하세요")
         lay.place(name, (0.0, 0.0), ins, rot + 90.0, False, R=R, L=L, W=W, A=A)
         ref = list(lay.msp)[-1]
         ref.dxf.layer = "RAIL_MODULE"

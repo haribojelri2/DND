@@ -45,10 +45,10 @@ DEFS: Tuple[Tuple[str, bool, bool], ...] = (
     ("CURVE RIGHT", False, False),
     ("BRANCH LEFT", False, False),
     ("BRANCH RIGHT", False, False),
-    ("U", True, False),
-    ("DOUBLE BRANCH", True, False),
-    ("U BRANCH LEFT", True, False),
-    ("U BRANCH RIGHT", True, False),
+    ("U", False, False),
+    ("DOUBLE BRANCH", False, False),
+    ("U BRANCH LEFT", False, False),
+    ("U BRANCH RIGHT", False, False),
     ("N LEFT", True, True),
     ("N RIGHT", True, True),
     ("BY PASS LEFT", True, True),
@@ -58,6 +58,15 @@ DEFS: Tuple[Tuple[str, bool, bool], ...] = (
     ("Y", False, False),
 )
 DEF_R, DEF_L, DEF_W, DEF_A = 450.0, 1000.0, 900.0, 45.0
+
+# U 계열(U·DOUBLE BRANCH·U BRANCH)은 W 를 쓰지 않는다 — 아치 = 반지름 R 의 반원(폭 2R). (MODULE FORMAT 제안서 표준 분기:
+#  R·L 만 표기, W 는 특수 분기 N·BY PASS·S 의 평행선 사이 길이). 예전 플러그인이 폭 W 로 그린 넓은 아치 블록은
+#  읽을 때만 그 폭대로 형상을 만들고, 새로 만들 때는 항상 2R.
+ARCH_NAMES = ("U", "DOUBLE BRANCH", "U BRANCH LEFT", "U BRANCH RIGHT")
+
+
+def is_arch(idx: int) -> bool:
+    return DEFS[idx][0] in ARCH_NAMES
 
 # 보고용 부분 이름 (Piece.role → 도면 용어)
 ROLE_KO = {"through": "관통 직선", "stub": "접속 직선", "leg": "다리 직선",
@@ -135,8 +144,8 @@ def clamp(idx: int, r: float, l: float, w: float, a: float) -> Tuple[float, floa
         wmin = 2.0 * r * (1.0 - math.cos(math.radians(a)))
         if w < wmin:
             w = wmin
-    elif uses_w:
-        if w < 2.0 * r:
+    elif is_arch(idx):
+        if w < 2.0 * r:          # 반원보다 좁은 아치는 없다 (w = 0 이면 반원)
             w = 2.0 * r
     return r, l, w, a
 

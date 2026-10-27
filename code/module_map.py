@@ -14,7 +14,8 @@
 
 모듈 형상은 제안서 기준이다: 분기류(BL·BR·DB·UBL·UBR)의 관통 위쪽 팔 = L + 180(through_extra_mm).
 플러그인 블록도 같은 형상(ModuleGeom.ThroughExtra)이다.
-U·DB·UBL·UBR 의 폭도 W(W1/W2) 로 표현한다(가운데 직선 = W − 2R).
+U·DB·UBL·UBR 은 W 를 쓰지 않는다 - 아치 = 반지름 R 의 반원(폭 2R). W1/W2 는 특수 분기(N·BY PASS·S) 폭만.
+예전 플러그인이 폭 W 로 그린 넓은 아치 블록은 그 형상대로 읽되 규격 밖이라고 경고한다.
 """
 from __future__ import annotations
 
@@ -45,7 +46,8 @@ FAMILY = {
     "S LEFT": ["SL", "SR"], "S RIGHT": ["SL", "SR"],
     "Y": ["Y"],
 }
-USES_W = {"U", "DB", "UBL", "UBR", "NL", "NR", "BPL", "BPR", "SL", "SR"}
+USES_W = {"NL", "NR", "BPL", "BPR", "SL", "SR"}      # W 를 쓰는 모듈 = 특수 분기(N·BY PASS·S)만
+ARCH_TYPES = {"U", "DB", "UBL", "UBR"}                  # U 계열: W 없음, 아치 = 반지름 R 의 반원(폭 2R)
 # 마진이 겹칠 때 U/N 한 링크로 합칠 수 있는 슬롯(90° 곡선 끝) - 가이드 5장
 MERGEABLE = {"C": {1, 2}, "Y": {2, 3}, "BL": {2}, "BR": {2}}
 
@@ -397,6 +399,11 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         warn(f"[경고] 모듈마다 R·L 이 다름(R {[v for v, _ in rc]}, L {[v for v, _ in lc]}) - MODULEPARAM 은 {R0}/{L0} 로 기록")
     if len(ac) > 1:
         warn(f"[경고] 모듈마다 A 가 다름 {[v for v, _ in ac]} - MODULEPARAM A={A0}")
+    _wide = [m for m in smods if m.type in ARCH_TYPES and abs(m.inst.W - 2 * m.inst.R) > 1.0]
+    if _wide:
+        warn(f"[경고] U 계열 모듈 {len(_wide)}개가 반원(폭 2R)이 아님 - 폭 "
+             f"{sorted({round(m.inst.W) for m in _wide})} (규격: U·DOUBLE BRANCH·U BRANCH 는 W 없이 반원). "
+             f"도면의 형상대로 변환했지만 LayoutEditor·역변환에서는 반원으로 재현됨")
     if len(wc) > 2:
         warn(f"[경고] 폭 종류가 {len(wc)}개 {[v for v, _ in wc]} - W1/W2 는 가장 많은 두 폭 {W1}/{W2}, 나머지 폭 모듈은 LayoutEditor 에서 재현 안 됨")
 

@@ -66,7 +66,7 @@ class Lay:
     def block(self, idx, r, l, w, a) -> str:
         name, uses_w, uses_a = mj.DEFS[idx]
         bn = "RAILMOD_" + name.replace(" ", "-") + "_R" + _num(r) + "_L" + _num(l)
-        if uses_w:
+        if uses_w or (mj.is_arch(idx) and w > 2.0 * r + 1e-6):   # 넓은 아치(예전 규격) 시험용은 이름에 W 를 남겨 구분
             bn += "_W" + _num(w)
         if uses_a:
             bn += "_A" + _num(a)

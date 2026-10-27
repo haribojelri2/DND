@@ -731,7 +731,7 @@ def substitute(in_path: str, out_path: Optional[str] = None, layers=None, tol: f
         msg = ["도면에 모듈 파라미터(R·L·W1·W2·A·M1·M2)가 저장돼 있지 않습니다.",
                "CAD 플러그인 Module 탭 [파라미터 설정]에서 저장한 뒤 다시 치환하세요. 치환하지 않았습니다."]
         return 3, msg
-    out_path = out_path or (in_path.rsplit(".", 1)[0] + "_modules.dxf")
+    out_path = out_path or (in_path.rsplit(".", 1)[0] + "_replace.dxf")
     try:
         res = convert(in_path, out_path, layers, tol, float(param[1]), module_color=3, plain_color=7,
                       module_layer="RAIL_MODULE", log=log, param=param)
@@ -770,7 +770,7 @@ def main(argv=None) -> int:
         code, lines = substitute(a.input, a.output, layers, a.tol)
         print("\n".join(lines))
         return code
-    out = a.output or (a.input.rsplit(".", 1)[0] + "_modules.dxf")
+    out = a.output or (a.input.rsplit(".", 1)[0] + "_replace.dxf")
     layers = [s.strip() for s in a.layer.split(",") if s.strip()] or None
     res = convert(a.input, out, layers, a.tol, a.L,
                   module_color=a.module_color, plain_color=a.plain_color, module_layer=a.module_layer,

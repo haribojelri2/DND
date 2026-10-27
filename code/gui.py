@@ -901,7 +901,7 @@ class App(tk.Tk):
                 pass
 
     def _run_c2m(self):
-        """선·호 도면 → 모듈 도면(<이름>_modules.dxf). 도면에 저장된 파라미터 한 세트로만 치환."""
+        """선·호 도면 → 모듈 도면(<이름>_replace.dxf, 같은 폴더에 자동 저장). 도면에 저장된 파라미터 한 세트로만 치환."""
         dxf = self.dxf_var.get().strip()
         if not dxf or not Path(dxf).exists():
             messagebox.showerror("오류", "DXF 파일을 선택해주세요.")
@@ -923,7 +923,7 @@ class App(tk.Tk):
                 if code != 0:
                     self.after(0, lambda: messagebox.showwarning("치환하지 않음", "\n".join(lines)))
                 else:
-                    out = str(Path(dxf).with_name(Path(dxf).stem + "_modules.dxf"))
+                    out = str(Path(dxf).with_name(Path(dxf).stem + "_replace.dxf"))
                     self.after(0, self.dxf_var.set, out)     # 이어서 [변환 실행] 하면 모듈 도면이 MAP 으로
                     self.after(0, self._log, "입력 DXF 를 치환 결과로 바꿔 두었습니다 - [변환 실행] 으로 MAP 을 만드세요.")
             except Exception as e:
@@ -998,12 +998,17 @@ def _cli_cad2mod(argv: list[str]) -> int:
         val = argv[i + 1] if i + 1 < len(argv) else ""
         layers = [s.strip() for s in val.split(",") if s.strip()] or None
         argv = argv[:i] + argv[i + 2:]
+    report = None
+    if "--report" in argv:                       # --report <txt> (플러그인: 결과 폴더를 어지럽히지 않게 임시 폴더로)
+        i = argv.index("--report")
+        report = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     args = [a for a in argv if not a.startswith("--")]
     if not args:
         return 2
     src = args[0]
-    out = args[1] if len(args) > 1 else src.rsplit(".", 1)[0] + "_modules.dxf"
-    report = out.rsplit(".", 1)[0] + "_result.txt"
+    out = args[1] if len(args) > 1 else src.rsplit(".", 1)[0] + "_replace.dxf"
+    report = report or out.rsplit(".", 1)[0] + "_result.txt"
     try:
         import cad_to_modules
         if not layer_given:
@@ -1012,6 +1017,7 @@ def _cli_cad2mod(argv: list[str]) -> int:
     except BaseException as e:
         code, lines = 1, [f"[오류] {e}"]
     try:
+        Path(report).parent.mkdir(parents=True, exist_ok=True)
         Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError:
         pass

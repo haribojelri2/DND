@@ -1275,13 +1275,25 @@ namespace RailPlugin
         static string RunConvert(Document doc, string exe, string layer)
         {
             Editor ed = doc.Editor;
-            string dxf;
-            try { dxf = Cad2Map.ExportCurrent(doc, "선·호 → 모듈 치환: 원본 DXF 저장 위치 (결과는 같은 폴더의 _modules.dxf)"); }
+            // 저장 위치를 묻지 않는다: 결과는 도면과 같은 폴더에 <도면이름>_replace.dxf 로 자동 저장
+            //  (저장 안 된 새 도면이면 문서 폴더). 변환기에 넘길 원본 DXF 는 임시 폴더에 내보낸다(사용자 파일을 덮어쓰지 않게).
+            string name = doc.Name ?? "Drawing";
+            string stem = System.IO.Path.GetFileNameWithoutExtension(name);
+            if (string.IsNullOrEmpty(stem)) stem = "Drawing";
+            bool saved = System.IO.Path.IsPathRooted(name) && System.IO.File.Exists(name);
+            string dir = saved ? System.IO.Path.GetDirectoryName(name)
+                               : System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+            string outp = System.IO.Path.Combine(dir, stem + "_replace.dxf");
+            string tmpDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RailPlugin_cad2mod");
+            string dxf = System.IO.Path.Combine(tmpDir, stem + ".dxf");
+            try
+            {
+                System.IO.Directory.CreateDirectory(tmpDir);
+                using (doc.LockDocument())
+                    doc.Database.DxfOut(dxf, 16, DwgVersion.Current);
+            }
             catch (System.Exception ex) { ed.WriteMessage("\nRAILMODCONV: 도면 내보내기 실패 - " + ex.Message); return null; }
-            if (dxf == null) return null;
-            string outp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(dxf),
-                                                 System.IO.Path.GetFileNameWithoutExtension(dxf) + "_modules.dxf");
-            string report = outp.Substring(0, outp.Length - 4) + "_result.txt";
+            string report = System.IO.Path.Combine(tmpDir, stem + "_replace_result.txt");
             try { if (System.IO.File.Exists(report)) System.IO.File.Delete(report); } catch { }
             ed.WriteMessage("\nRAILMODCONV: 치환 중... (" + System.IO.Path.GetFileName(outp) + ")");
             int code;
@@ -1292,7 +1304,7 @@ namespace RailPlugin
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WorkingDirectory = System.IO.Path.GetDirectoryName(exe),
-                    Arguments = "--cad2mod \"" + dxf + "\" \"" + outp + "\" --layer \"" + layer + "\"",
+                    Arguments = "--cad2mod \"" + dxf + "\" \"" + outp + "\" --layer \"" + layer + "\" --report \"" + report + "\"",
                 };
                 using (var pr = System.Diagnostics.Process.Start(psi))
                 {
@@ -1698,7 +1710,7 @@ namespace RailPlugin
 
                 var srcE = new Autodesk.Windows.RibbonPanelSource { Title = "편집" };
                 srcE.Items.Add(MakeCmdButton("선·호 →\n모듈 치환", "RAILMODCONV",
-                    "선·호로 그린 도면을 도면 파라미터 한 세트로 모듈로 바꾼 새 도면(_modules.dxf)을 엽니다. 안 맞는 곳은 흰색 선·호로 남깁니다"));
+                    "선·호로 그린 도면을 도면 파라미터 한 세트로 모듈로 바꾼 새 도면을 같은 폴더에 <도면이름>_replace.dxf 로 저장하고 엽니다. 안 맞는 곳은 흰색 선·호로 남깁니다"));
                 srcE.Items.Add(Sep());
                 srcE.Items.Add(MakeCmdButton("모듈\n삭제", "RAILMODDEL", "선택한 모듈을 지우고 안 쓰는 블록 정의를 정리합니다"));
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcE });

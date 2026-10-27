@@ -94,7 +94,10 @@ the extended format `…/OPSID/OPSOffset/ModuleID/SlotID/Param`, LINKs, then `MO
 DB ③④); links run slot-to-slot (inside modules: S / 90° L·R / arch U / cross N; between modules: S of `g − margins`). Facing
 slots closer than the two margins drop both nodes and join the two 90° curves with one U/N link (only C①②, Y②③, BL②, BR②;
 other overlaps warn). Decisions (2026-09-30): slot geometry follows the **spec** (branch through-top arm = L+180 =
-`through_extra_mm`, plugin blocks are 180 shorter), U-family width is W (W1/W2), Angle is **clockwise** (guide example 3).
+`through_extra_mm`, plugin blocks are 180 shorter), Angle is **clockwise** (guide example 3). **U family (U/DB/UBL/UBR) has
+no W (2026-10-27, spec: R·L only) — the arch is a semicircle of radius R (width 2R); W is used only by N/BY PASS/S and
+several widths are allowed (W1/W2 = the two most frequent lane-change widths).** Old wide-arch blocks are read as drawn
+with a warning.
 Plugin modules are matched to spec types by free-end positions + outward directions + path probes on the block (DB is
 rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/LINK/MODULE lines exactly
 (`tmp guide_examples.py`); drawings without modules and `enabled=false` are byte-identical to before.
@@ -104,8 +107,8 @@ rectangle-symmetric). Verified: guide examples 1–4 reproduce the guide's NODE/
 `map_to_cad.map_to_dxf` (GUI MAP→CAD and `DXFtoMAP.exe --map2cad`) restores **only** module-format maps via
 `module_to_cad.module_map_to_dxf`; a map without `MODULE/` records raises `NotModuleMap` (no DXF) — the old
 line/arc-only restore was removed (2026-10-05), `reconstruct` is kept for the non-module parts. Each MODULE record is re-placed as the plugin block whose forward match
-(`module_map.match_module`) gives the same type/angle/reference point (plugin names × 4 rotations tried); W is W1/W2
-chosen by the module's NODE positions (slot + margin). Slot connections ("ID-n") become slot-to-slot lines; links
+(`module_map.match_module`) gives the same type/angle/reference point (plugin names × 4 rotations tried); U family is a
+semicircle, lane-change W is W1/W2 or the width measured from the module's NODE coordinates (slot + margin). Slot connections ("ID-n") become slot-to-slot lines; links
 touching non-module nodes are rebuilt with `map_to_cad.reconstruct`, plus the margin piece slot → node. The result
 carries MODULEPARAM as the drawing parameter so it converts again. Round trip CAD→MAP→CAD→MAP is identical (direction
 ignored) for guide 1–4, mail case 2, module tests A–H, 260410/asd/fromMap50 substitutions; limit: curve links whose
@@ -114,8 +117,9 @@ length was cut by a slot margin overshooting the next arc (length < chord) come 
 ### Plugin Module tab (RailPlugin/ModuleCommands.cs) — one parameter set per drawing
 
 R/L/W1/W2/A/M1/M2 stored in the drawing's NOD XRecord `RAILPLUGIN_MODULEPARAM` (= MODULEPARAM). Commands: RAILMODPARAM(P) set,
-RAILMOD place with it (W-modules use the ribbon W1/W2 toggle RAILMODW, no prompt), RAILMODAPPLY re-make existing modules, RAILMODEXTRACT(P) derive R/W1/W2/A from
-modules or plain lines/arcs (L, M1, M2 kept). `ModuleGeom.EnsureBlock` refills a same-named block whose shape differs.
+RAILMOD place with it (N/BY PASS/S use the ribbon W1/W2 toggle RAILMODW, no prompt), RAILMODAPPLY re-make existing modules
+(widths other than the old W1/W2 are kept), RAILMODEXTRACT(P) derive R/W1/W2/A from modules or plain lines/arcs (W from lane
+changes only; L, M1, M2 kept). Per-company templates in the parameter dialog → `%APPDATA%\RailPlugin\module_templates.txt`. `ModuleGeom.EnsureBlock` refills a same-named block whose shape differs.
 Headless check: RAILMODPARAMTEST via accoreconsole.
 
 ### Module substitution (cad_to_modules.py) — CAD → CAD

@@ -869,7 +869,7 @@ namespace RailPlugin
             }
             catch { }
             RibbonBuilder.Hook();   // 리본 탭/버튼 (실패해도 명령/그립은 정상)
-            ModuleOverlap.Hook();   // 모듈 겹침 → 빨간색 (명령이 끝날 때 자동 검사)
+            // 모듈 겹침·마진 검사는 리본 버튼(RAILMODOVERLAP·RAILMODMARGIN)을 눌렀을 때만 한다 — 자동 검사(ModuleOverlap.Hook) 안 함
         }
         public void Terminate()
         {

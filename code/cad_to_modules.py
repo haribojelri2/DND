@@ -278,6 +278,35 @@ def find_groups(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> 
     groups = []
     taken: set = set()
 
+    # Y 를 맨 먼저 찾는다: 줄기 끝에서 두 90° 호가 좌우로 갈라지는 자리는 Y 뿐이다. 되돌림(아치) 찾기가 먼저 돌면
+    #  아래 호 - 줄기 직선 - Y 의 한쪽 호를 아치로 묶어 가져가 Y 가 CURVE 두 개로 쪼개진다(FAB30 (19918, 3446)).
+    # Y: 한 접합점에서 같은 방향으로 출발해 좌우로 갈라지는 90° 호 두 개 + 반대편에서 들어오는 직선 하나
+    #  (관통 직선이 있으면 갈림점 두 개 = BRANCH 두 개라 Y 가 아니다).  포함 관계: CURVE 두 개 → Y
+    for i, a in enumerate(segs):
+        if i in taken or a.kind != "ARC" or abs(abs(a.sweep) - 90.0) > ang_tol:
+            continue
+        for J in (a.p0, a.p1):
+            if g.deg(J) != 3:
+                continue
+            ua = a.tangent_at(J)
+            stem = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"
+                    and _smooth(mul(segs[k].tangent_at(J), -1.0), ua, ang_tol)]
+            if not stem:
+                continue
+            j = next((k for k in g.others(J, [i]) if k not in taken and segs[k].kind == "ARC"
+                      and abs(abs(segs[k].sweep) - 90.0) <= ang_tol and abs(segs[k].r - a.r) <= tol
+                      and _smooth(ua, segs[k].tangent_at(J), ang_tol)
+                      and turn_sign(segs[k], J) != turn_sign(a, J)), None)
+            if j is None:
+                continue
+            la, lb = single_ladder(g, i, ang_tol), single_ladder(g, j, ang_tol)
+            head = math.degrees(math.atan2(ua[1], ua[0]))
+            y = Cand("Y", J, lambda p: (0.0, p["l"]), head, a.r, 900.0, 45.0, (i, j))
+            ladder = [[[la[0], lb[0]]]] if la and lb else []
+            groups.append(ladder + [[[y]]])                                            # CURVE 두 개 → Y
+            taken.update((i, j))
+            break
+
     for i, a in enumerate(segs):
         if a.kind != "ARC" or i in taken:
             continue
@@ -354,33 +383,6 @@ def find_groups(g: Graph, tol: float, ang_tol: float, max_w: float = 4000.0) -> 
                 groups.append(ladder)
                 taken.update(used)
                 break
-
-    # Y: 한 접합점에서 같은 방향으로 출발해 좌우로 갈라지는 90° 호 두 개 + 반대편에서 들어오는 직선 하나
-    #  (관통 직선이 있으면 갈림점 두 개 = BRANCH 두 개라 Y 가 아니다).  포함 관계: CURVE 두 개 → Y
-    for i, a in enumerate(segs):
-        if i in taken or a.kind != "ARC" or abs(abs(a.sweep) - 90.0) > ang_tol:
-            continue
-        for J in (a.p0, a.p1):
-            if g.deg(J) != 3:
-                continue
-            ua = a.tangent_at(J)
-            stem = [k for k in g.others(J, [i]) if segs[k].kind == "LINE"
-                    and _smooth(mul(segs[k].tangent_at(J), -1.0), ua, ang_tol)]
-            if not stem:
-                continue
-            j = next((k for k in g.others(J, [i]) if k not in taken and segs[k].kind == "ARC"
-                      and abs(abs(segs[k].sweep) - 90.0) <= ang_tol and abs(segs[k].r - a.r) <= tol
-                      and _smooth(ua, segs[k].tangent_at(J), ang_tol)
-                      and turn_sign(segs[k], J) != turn_sign(a, J)), None)
-            if j is None:
-                continue
-            la, lb = single_ladder(g, i, ang_tol), single_ladder(g, j, ang_tol)
-            head = math.degrees(math.atan2(ua[1], ua[0]))
-            y = Cand("Y", J, lambda p: (0.0, p["l"]), head, a.r, 900.0, 45.0, (i, j))
-            ladder = [[[la[0], lb[0]]]] if la and lb else []
-            groups.append(ladder + [[[y]]])                                            # CURVE 두 개 → Y
-            taken.update((i, j))
-            break
 
     for i, s in enumerate(segs):
         if i in taken:

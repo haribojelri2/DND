@@ -60,6 +60,22 @@ def unify_edge_directions(segments, tolerance=INTER_MERGE_TOL, start_direction="
     dfs_order = [start_idx]
     stack = [start_idx]
 
+    # 속도: 끝점 격자(칸 = tolerance). 뒤집어도 두 끝점 위치는 그대로라 한 번만 만든다.
+    #  후보는 원래 순서(번호순)로 보고, 거리 판정은 원래 식 그대로 → 결과 동일.
+    _cell = max(float(tolerance), 1e-6)
+    _grid = {}
+    for _i, _e in enumerate(edges):
+        for _p in (_e.start, _e.end):
+            _grid.setdefault((math.floor(_p[0] / _cell), math.floor(_p[1] / _cell)), set()).add(_i)
+
+    def _cands(p):
+        gx, gy = math.floor(p[0] / _cell), math.floor(p[1] / _cell)
+        out = set()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                out |= _grid.get((gx + dx, gy + dy), set())
+        return sorted(out)
+
     def correct_and_push(current_edge, j, next_edge, start_near, end_near):
         """방향 보정 후 push. 규칙: 라인-라인/아크-아크 = 꼬리물기, 라인->아크 = arc rule, 아크->라인 = arc exit tangent"""
         if current_edge.edge_type == 'LINE' and next_edge.edge_type == 'LINE':
@@ -112,7 +128,8 @@ def unify_edge_directions(segments, tolerance=INTER_MERGE_TOL, start_direction="
         current_edge = edges[current_idx]
         cur_end = current_edge.end
 
-        for j, next_edge in enumerate(edges):
+        for j in _cands(cur_end):
+            next_edge = edges[j]
             if j in visited:
                 continue
             start_near = dist(next_edge.start, cur_end) <= tolerance
@@ -136,7 +153,8 @@ def unify_edge_directions(segments, tolerance=INTER_MERGE_TOL, start_direction="
             current_edge = edges[current_idx]
             cur_end = current_edge.end
 
-            for j, next_edge in enumerate(edges):
+            for j in _cands(cur_end):
+                next_edge = edges[j]
                 if j in visited:
                     continue
                 start_near = dist(next_edge.start, cur_end) <= tolerance

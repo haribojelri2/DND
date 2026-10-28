@@ -533,8 +533,17 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         mB.links[iB] = f"{mA.id}-{iA + 1}"
 
     # 4) 경로 진행 방향(모듈 안) - probe 위치의 도면 엣지 방향
+    # 속도: probe 에서 50 mm 안에 들 수 있는 엣지(경계상자 + 50 이 probe 를 품는 것)만 본다. 원래 순서 유지 → 결과 동일
+    _ebox = [(min(e.start[0], e.end[0]), min(e.start[1], e.end[1]), max(e.start[0], e.end[0]), max(e.start[1], e.end[1]))
+             if not _is_arc(e) else
+             (_center(e)[0] - e._data.r, _center(e)[1] - e._data.r, _center(e)[0] + e._data.r, _center(e)[1] + e._data.r)
+             for e in unified_edges]
+
     def path_forward(p: TPath) -> Optional[bool]:
-        best = min(unified_edges, key=lambda e: _edge_dist(e, p.probe), default=None)
+        x, y = p.probe
+        near = [e for e, b in zip(unified_edges, _ebox)
+                if b[0] - 51.0 <= x <= b[2] + 51.0 and b[1] - 51.0 <= y <= b[3] + 51.0]
+        best = min(near, key=lambda e: _edge_dist(e, p.probe), default=None)
         if best is None or _edge_dist(best, p.probe) > 50.0:
             return None
         return dot(_edge_tangent_at(best, p.probe), p.tan) > 0

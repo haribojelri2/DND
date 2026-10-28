@@ -5,6 +5,7 @@ from typing import List, Tuple, Optional, Any, Dict, Set
 
 import itertools
 from collections import defaultdict
+import numpy as np
 from core import *
 
 def split_near_180_arcs(arcs: List["ArcSeg"], *, target_deg: float = 180.0, tol_deg: float = 1.0) -> List["ArcSeg"]:
@@ -64,11 +65,29 @@ def split_edges_at_intersections(
 
     line_edges: List[LineSeg] = []
 
-    for L in line_list:
+    # 속도: 모든 선·호 쌍을 다 보지 않고, 경계상자(+허용 오차)가 겹치는 것만 본다. 순서는 원래대로(결과 동일).
+    pad = max(float(merge_tol), T_TOUCH_TOL) + 1.0
+    if line_list:
+        lb = np.array([(min(M.p1[0], M.p2[0]), min(M.p1[1], M.p2[1]), max(M.p1[0], M.p2[0]), max(M.p1[1], M.p2[1]))
+                       for M in line_list], dtype=float)
+    else:
+        lb = np.zeros((0, 4))
+    if arc_list:
+        ab = np.array([(A.cx - A.r, A.cy - A.r, A.cx + A.r, A.cy + A.r) for A in arc_list], dtype=float)
+    else:
+        ab = np.zeros((0, 4))
+
+    def _near(box, x0, y0, x1, y1):
+        return np.nonzero((box[:, 2] >= x0 - pad) & (box[:, 0] <= x1 + pad) &
+                          (box[:, 3] >= y0 - pad) & (box[:, 1] <= y1 + pad))[0]
+
+    for li, L in enumerate(line_list):
         a, b = L.p1, L.p2
         cuts: List[Tuple[float, float]] = [a, b]
+        x0, y0, x1, y1 = lb[li]
 
-        for M in line_list:
+        for mi in _near(lb, x0, y0, x1, y1):
+            M = line_list[mi]
             if M is L:
                 continue
             c1, d1 = M.p1, M.p2
@@ -86,7 +105,8 @@ def split_edges_at_intersections(
                         cuts.append(ep)
                         register_vertex(ep)
 
-        for arc in arc_list:
+        for ai in _near(ab, x0, y0, x1, y1):
+            arc = arc_list[ai]
             if arc.r < 1e-12:
                 continue
 
@@ -153,6 +173,17 @@ def glue_arc_endpoints_to_lines(lines: List[LineSeg], arcs: List[ArcSeg], tol: f
     if tol <= 0:
         return
     min_seg = max(1e-6, tol * 0.02)
+    # 속도: tol 안에 들 수 있는 선(경계상자 + tol 이 끝점을 품는 선)만 본다 — 가장 가까운 선이 tol 밖이면 어차피 건너뛴다.
+    #  선이 쪼개지면 상자 표를 다시 만든다. 후보는 원래 순서대로 봐서 같은 거리면 앞 선이 이기는 것도 같다.
+    pad = float(tol) + 1.0
+
+    def _boxes():
+        if not lines:
+            return np.zeros((0, 4))
+        return np.array([(min(s.p1[0], s.p2[0]), min(s.p1[1], s.p2[1]), max(s.p1[0], s.p2[0]), max(s.p1[1], s.p2[1]))
+                         for s in lines], dtype=float)
+
+    box = _boxes()
     for arc in arcs:
         if arc.r < 1e-12:
             continue
@@ -161,7 +192,11 @@ def glue_arc_endpoints_to_lines(lines: List[LineSeg], arcs: List[ArcSeg], tol: f
             best_q = None
             best_d = float("inf")
             best_idx = -1
-            for i, seg in enumerate(lines):
+            cand = np.nonzero((box[:, 0] - pad <= p[0]) & (p[0] <= box[:, 2] + pad) &
+                              (box[:, 1] - pad <= p[1]) & (p[1] <= box[:, 3] + pad))[0]
+            for i in cand:
+                i = int(i)
+                seg = lines[i]
                 q = closest_point_on_segment(p, seg.p1, seg.p2)
                 d = dist(p, q)
                 if d < best_d:
@@ -180,6 +215,7 @@ def glue_arc_endpoints_to_lines(lines: List[LineSeg], arcs: List[ArcSeg], tol: f
             if dist(seg.p1, split_pt) < min_seg or dist(seg.p2, split_pt) < min_seg:
                 continue
             lines[best_idx : best_idx + 1] = [LineSeg(seg.p1, split_pt), LineSeg(split_pt, seg.p2)]
+            box = _boxes()
 
 def snap_segments(split_lines: List[LineSeg], arcs: List[ArcSeg], tol: float) -> None:
     """세그먼트 좌표들을 tol 이내 대표점으로 in-place 치환."""

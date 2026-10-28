@@ -416,20 +416,52 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         for p in m.inst.pieces:
             (cover_lines if p.kind == "LINE" else cover_arcs).append(p)
 
+    # 속도: 엣지마다 모든 피스를 보지 않고 근처 피스만 본다(호 = 중심 격자, 직선 = 경계상자 격자). 원래 순서 유지 → 결과 동일
+    _gc = max(tol, 1.0) * 4.0
+    _gk = lambda p: (math.floor(p[0] / _gc), math.floor(p[1] / _gc))
+    _arc_cells = collections.defaultdict(list)
+    for k, q in enumerate(cover_arcs):
+        _arc_cells[_gk(q.c)].append(k)
+    _LC = 2000.0
+    _line_cells = collections.defaultdict(list)
+    for k, q in enumerate(cover_lines):
+        x0, x1 = sorted((q.a[0], q.b[0]))
+        y0, y1 = sorted((q.a[1], q.b[1]))
+        for gx in range(math.floor((x0 - tol) / _LC), math.floor((x1 + tol) / _LC) + 1):
+            for gy in range(math.floor((y0 - tol) / _LC), math.floor((y1 + tol) / _LC) + 1):
+                _line_cells[(gx, gy)].append(k)
+
+    def _arcs_near(c):
+        gx, gy = _gk(c)
+        ks = set()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                ks.update(_arc_cells.get((gx + dx, gy + dy), ()))
+        return [cover_arcs[k] for k in sorted(ks)]
+
+    def _lines_near(a, b):
+        x0, x1 = sorted((a[0], b[0]))
+        y0, y1 = sorted((a[1], b[1]))
+        ks = set()
+        for gx in range(math.floor((x0 - tol) / _LC), math.floor((x1 + tol) / _LC) + 1):
+            for gy in range(math.floor((y0 - tol) / _LC), math.floor((y1 + tol) / _LC) + 1):
+                ks.update(_line_cells.get((gx, gy), ()))
+        return [cover_lines[k] for k in sorted(ks)]
+
     plain = []   # (kind, a, b, edge)  a→b = 진행 방향
     for e in unified_edges:
         if _is_arc(e):
             c, r = _center(e), e._data.r
             if any(dist(c, q.c) <= tol and abs(r - q.r) <= tol and
                    min(dist(e.start, q.a), dist(e.start, q.b)) <= tol and
-                   min(dist(e.end, q.a), dist(e.end, q.b)) <= tol for q in cover_arcs):
+                   min(dist(e.end, q.a), dist(e.end, q.b)) <= tol for q in _arcs_near(c)):
                 continue
             plain.append(("ARC", e.start, e.end, e))
             continue
         d = unit(sub(e.end, e.start))
         Ltot = dist(e.start, e.end)
         cov = []
-        for q in cover_lines:
+        for q in _lines_near(e.start, e.end):
             qd = sub(q.b, q.a)
             if abs(cross(d, sub(q.a, e.start))) > tol or abs(cross(d, sub(q.b, e.start))) > tol:
                 continue
@@ -450,8 +482,15 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         for i, s in enumerate(m.slots):
             slot_at.append((s.pos, m, i))
 
+    _sc = max(tol, 1.0)
+    _slot_cells = collections.defaultdict(list)
+    for k, (q, _m, _i) in enumerate(slot_at):
+        _slot_cells[(math.floor(q[0] / _sc), math.floor(q[1] / _sc))].append(k)
+
     def slot_near(p):
-        return next(((m, i) for q, m, i in slot_at if dist(q, p) <= tol), None)
+        gx, gy = math.floor(p[0] / _sc), math.floor(p[1] / _sc)
+        ks = sorted(k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in _slot_cells.get((gx + dx, gy + dy), ()))
+        return next(((slot_at[k][1], slot_at[k][2]) for k in ks if dist(slot_at[k][0], p) <= tol), None)
 
     # 3) 모듈 사이 직선 연결: 슬롯에서 시작하는 직선 사슬 → 반대편 슬롯
     key = lambda p: (round(p[0] / tol), round(p[1] / tol))
@@ -511,8 +550,20 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
                 used_piece.update(chain)
     # 사이 직선 없이 마주 보는 슬롯: 맞닿음(g = 0) 또는 제안서 형상(관통 +180)으로 서로 지나침(g < 0)
     reach = 2.0 * max(M1, M2) + float(mc["through_extra_mm"]) * 2
+    # 속도: 짝이 되려면 두 슬롯 거리가 reach + tol 안 → 그 크기 격자에서 이웃 칸만(번호순 유지 → 결과 동일)
+    _fc = reach + 2.0 * tol + 1.0
+    _face_cells = collections.defaultdict(list)
+    for k, (q, _m, _i) in enumerate(slot_at):
+        _face_cells[(math.floor(q[0] / _fc), math.floor(q[1] / _fc))].append(k)
+
+    def _face_cands(x):
+        q = slot_at[x][0]
+        gx, gy = math.floor(q[0] / _fc), math.floor(q[1] / _fc)
+        return sorted(k for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                      for k in _face_cells.get((gx + dx, gy + dy), ()) if k > x)
+
     for x in range(len(slot_at)):
-        for y in range(x + 1, len(slot_at)):
+        for y in _face_cands(x):
             pa, ma, ia = slot_at[x]
             pb, mb, ib = slot_at[y]
             if ma is mb:

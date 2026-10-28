@@ -693,12 +693,22 @@ class ModuleJudge:
         모자라면 배치 규칙이 이격을 건너뛰거나 두 노드가 한 점으로 겹친다 → 경고만 남긴다(판정은 그대로)."""
         tol = self.tol
         lines = [e for e in edges if e.edge_type == "LINE"]
+        # 속도: 시작점·끝점 격자(칸 = tol). 후보는 원래 순서대로 → 결과 동일
+        _c = max(tol, 1e-6)
+        _s_cells, _e_cells = {}, {}
+        for k, e in enumerate(lines):
+            _s_cells.setdefault((math.floor(e.start[0] / _c), math.floor(e.start[1] / _c)), []).append(k)
+            _e_cells.setdefault((math.floor(e.end[0] / _c), math.floor(e.end[1] / _c)), []).append(k)
+
+        def _cands(cells, pt):
+            gx, gy = math.floor(pt[0] / _c), math.floor(pt[1] / _c)
+            return sorted(k for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in cells.get((gx + dx, gy + dy), ()))
 
         def at_start(pt):   # pt 에서 시작하는 직선
-            return [e for e in lines if _d(e.start, pt) <= tol]
+            return [lines[k] for k in _cands(_s_cells, pt) if _d(lines[k].start, pt) <= tol]
 
         def at_end(pt):     # pt 에서 끝나는 직선
-            return [e for e in lines if _d(e.end, pt) <= tol]
+            return [lines[k] for k in _cands(_e_cells, pt) if _d(lines[k].end, pt) <= tol]
 
         need: Dict[int, float] = {}
         where: Dict[int, Any] = {}

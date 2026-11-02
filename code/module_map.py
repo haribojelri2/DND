@@ -626,8 +626,10 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
                                 "text": f"마진 겹침 {mA.type}{iA + 1}-{mB.type}{iB + 1} 간격 {g:.0f} < 마진 합 {need:.0f}"})
             warn(f"[확인 필요] 마진 겹침 ({p[0]:.0f}, {p[1]:.0f}): 모듈 {mA.id}({mA.type}) 슬롯{iA + 1} ↔ "
                  f"모듈 {mB.id}({mB.type}) 슬롯{iB + 1} 간격 {g:.0f} mm 가 마진 합 {need:.0f} mm 보다 짧음 - "
-                 f"마진(M1·M2) 설정 또는 도면의 두 모듈 간격을 확인하세요")
-            plain_conn.append(c)
+                 f"NODE 하나로 합침. 마진(M1·M2) 설정 또는 도면의 두 모듈 간격을 확인하세요")
+            # 사이 직선 길이가 0 이하가 되므로 길이 0 링크를 만들지 않고 두 슬롯이 NODE 하나를 함께 쓴다
+            same_point[(mA.id, iA)] = (mB.id, iB)
+            same_point[(mB.id, iB)] = (mA.id, iA)
             continue
         pA = next(p for p in mA.paths if iA + 1 in (p.a, p.b))
         pB = next(p for p in mB.paths if iB + 1 in (p.a, p.b))

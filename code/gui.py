@@ -162,7 +162,8 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
     if mjudge is not None and module_map.enabled(cfg):
         # MODULE FORMAT: 이격 기준 MAP 하나 (ModuleID/SlotID·MODULE·MODULEPARAM 포함, 원본 MAP 없음)
         log("MODULE FORMAT MAP 만드는 중... (모듈 슬롯 + M1/M2 이격)")
-        mjudge.clearance_inputs(unified_edges)          # 모듈 CSV 의 판정 칸 채우기(보고용)
+        # 모듈 CSV 의 판정 칸 채우기(보고용). 350mm 대기 이격 검사는 예전 배치 규칙이라 이 MAP 에는 맞지 않음
+        mjudge.clearance_inputs(unified_edges, spacing_check=False)
         if DIRECTION.upper() == "CW":
             for e in unified_edges:
                 e.reverse()
@@ -179,6 +180,9 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         log(f"모듈 {len(res.modules)}개 → MODULE 레코드, MODULEPARAM "
             + "/".join(f"{v:g}" for v in res.param))
         _ovl = [w for w in res.warnings if w.startswith("[확인 필요] 마진 겹침")]
+        # 간격 경고 기준 = 이 MAP 의 실제 배치(슬롯 + M1·M2). 각 줄은 build 가 이미 로그에 남겼다
+        mjudge.spacing_warnings = [w.split("] ", 1)[1] for w in _ovl]
+        mjudge.spacing_logged = True
         if _ovl:
             log(f"[확인 필요] 마진 겹침 {len(_ovl)}곳 - 두 모듈 간격이 마진 합보다 짧습니다. "
                 f"마진(M1·M2) 설정이나 도면을 확인하세요 (위치는 위 로그)")

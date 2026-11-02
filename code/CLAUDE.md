@@ -93,7 +93,9 @@ the extended format `…/OPSID/OPSOffset/ModuleID/SlotID/Param`, LINKs, then `MO
 `MODULEPARAM/R/L/W1/W2/A/M1/M2`. Module nodes = spec slot point + outward M1 (M1/M2 from the drawing XRecord) (M2 for the through-top slots: BL/BR/UBL/UBR ③,
 DB ③④); links run slot-to-slot (inside modules: S / 90° L·R / arch U / cross N; between modules: S of `g − margins`). Facing
 slots closer than the two margins drop both nodes and join the two 90° curves with one U/N link (only C①②, Y②③, BL②, BR②;
-other overlaps warn). Decisions (2026-09-30): slot geometry follows the **spec** (branch through-top arm = L+180 =
+other overlaps warn). Spacing warnings in this path follow the MAP's own rule (2026-11-02): the judge's 350 mm
+"대기 이격" check (old node.pptx placement) is skipped (`clearance_inputs(spacing_check=False)`) and `_modules.csv`
+lists the M1/M2 margin overlaps from `module_map.build` instead (already logged once there). Decisions (2026-09-30): slot geometry follows the **spec** (branch through-top arm = L+180 =
 `through_extra_mm`, plugin blocks are 180 shorter), Angle is **clockwise** (guide example 3). **U family (U/DB/UBL/UBR) has
 no W (2026-10-27, spec: R·L only) — the arch is a semicircle of radius R (width 2R); W is used only by N/BY PASS/S and
 several widths are allowed (W1/W2 = the two most frequent lane-change widths).** Old wide-arch blocks are read as drawn

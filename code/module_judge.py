@@ -590,6 +590,7 @@ class ModuleJudge:
         self.free_arc_count = 0
         self.conflicts = 0
         self.spacing_warnings: List[str] = []
+        self.spacing_logged = False     # True = 간격 경고를 MAP 만들 때 이미 로그에 남김(보고에서 다시 안 찍음)
 
     # ── 준비 ──
     def bind(self, edges: Sequence[Any]) -> None:
@@ -634,8 +635,9 @@ class ModuleJudge:
         return _dedup(groups)
 
     # ── 대기 노드(이격) 입력 ──
-    def clearance_inputs(self, edges: Sequence[Any]) -> Dict[str, Any]:
-        """insert_clearance_nodes(module_judgment=...) 입력. 인덱스는 이 edges 기준."""
+    def clearance_inputs(self, edges: Sequence[Any], spacing_check: bool = True) -> Dict[str, Any]:
+        """insert_clearance_nodes(module_judgment=...) 입력. 인덱스는 이 edges 기준.
+        spacing_check=False: 350mm 대기 이격 검사를 건너뛴다(MODULE FORMAT MAP 은 M1·M2 로 따로 검사)."""
         u_pairs, n_pairs, lr_arcs, corner_arcs = [], [], [], []
         for mod in self.modules:
             mod.judged = []
@@ -685,7 +687,8 @@ class ModuleJudge:
                         mod.judged.append("N분기 - 방향 불일치로 제외")
                 elif f.kind == "y":
                     mod.judged.append("Y - 대기 노드 스펙 없음(호는 L/R 링크)")
-        self._spacing_check(edges, u_pairs, n_pairs, lr_arcs, corner_arcs)
+        if spacing_check:
+            self._spacing_check(edges, u_pairs, n_pairs, lr_arcs, corner_arcs)
         return {"u_pairs": u_pairs, "n_pairs": n_pairs, "lr_arcs": lr_arcs, "corner_arcs": corner_arcs}
 
     def _spacing_check(self, edges, u_pairs, n_pairs, lr_arcs, corner_arcs, take: float = 350.0) -> None:
@@ -802,8 +805,9 @@ class ModuleJudge:
         n_notes = sum(1 for m in self.modules if m.notes)
         if n_notes:
             lines.append(f"[주의] 확인 필요한 모듈 {n_notes}개 - _modules.csv 의 비고 참고")
-        for w in self.spacing_warnings:
-            lines.append("[주의] " + w)
+        if not self.spacing_logged:
+            for w in self.spacing_warnings:
+                lines.append("[주의] " + w)
         return lines
 
     def save_csv(self, path: str) -> None:

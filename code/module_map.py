@@ -383,8 +383,13 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
 
     # MODULEPARAM (파일당 1개)
     def common(vals):
-        c = collections.Counter(round(v, 1) for v in vals)     # 맵 왕복 도면의 미세 오차(900.016 등)는 같은 값으로
-        return c.most_common()
+        # 묶기는 소수 1자리(맵 왕복 도면의 미세 오차 900.016 등은 같은 값으로), 기록 값은 그 묶음에서 가장 많은
+        # 원래 값(505.555556 같은 도면 값을 505.6 으로 바꾸면 역변환 형상이 mm 단위로 어긋난다)
+        groups = collections.defaultdict(list)
+        for v in vals:
+            groups[round(v, 1)].append(round(v, 6))
+        c = collections.Counter({k: len(g) for k, g in groups.items()})
+        return [(collections.Counter(groups[k]).most_common(1)[0][0], n) for k, n in c.most_common()]
 
     rc, lc = common(m.inst.R for m in smods), common(m.inst.L for m in smods)
     ac = common(m.inst.A for m in smods if m.type in ("NL", "NR", "BPL", "BPR", "SL", "SR"))
@@ -934,6 +939,16 @@ def module_lines(res: Result) -> List[str]:
         # 가이드 예시와 같게: Y 뒤에 슬롯 필드를 '/' 로 잇고 끝에 '/' 를 더 붙이지 않는다
         rx, ry = (("0.0" if v == "-0.0" else v) for v in (f"{m.ref[0]:.1f}", f"{m.ref[1]:.1f}"))
         out.append(f"MODULE/{m.id}/{m.type}/{m.angle}/{rx}/{ry}/" + "/".join(m.links))
-    R, L, W1, W2, A, M1, M2 = res.param
-    out.append(f"MODULEPARAM/{R:.1f}/{L:.1f}/{W1:.1f}/{W2:.1f}/{A:.1f}/{M1:.1f}/{M2:.1f}")
+    out.append("MODULEPARAM/" + "/".join(_param_str(v) for v in res.param))
     return out
+
+
+def _param_str(v: float) -> str:
+    """MODULEPARAM 값: 소수 1자리로 딱 떨어지면 가이드처럼 '450.0', 아니면 반올림하지 않는다
+    (예: W1 505.555556, A 33.75). 1자리로 자르면 역변환에서 N·BY PASS 형상이 mm 단위로 어긋난다."""
+    v = float(v)
+    if abs(v - round(v, 1)) < 1e-9:
+        s = f"{v:.1f}"
+    else:
+        s = f"{v:.6f}".rstrip("0")
+    return "0.0" if s == "-0.0" else s

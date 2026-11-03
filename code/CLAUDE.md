@@ -90,7 +90,7 @@ clearance_nodes. LayoutEditor mail CASE 1 (C+C→U) and CASE 2 (C+BL→N) reprod
 Spec: `LayoutEditorApp/LayoutEditorApp/NODE_모듈정보_기재가이드.md` + `MODULE FORMAT 제안서.pptx`. When modules are present
 and `config module_map.enabled` (default true), `gui.run_pipeline` writes **one** `<stem>.map` (no `ori_`): NODE lines in
 the extended format `…/OPSID/OPSOffset/ModuleID/SlotID/Param`, LINKs, then `MODULE/ID/Type/Angle/X/Y/slot…` lines and one
-`MODULEPARAM/R/L/W1/W2/A/M1/M2`. Module nodes = spec slot point + outward M1 (M1/M2 from the drawing XRecord) (M2 for the through-top slots: BL/BR/UBL/UBR ③,
+`MODULEPARAM/R/L/W1/W2/A/M1/M2` (values grouped at 0.1 but written unrounded since 2026-11-03 — `450.0` stays `450.0`, `505.555556`/`33.75` are no longer cut to `505.6`/`33.8`, which shifted lane-change shapes by mm on MAP→CAD). Module nodes = spec slot point + outward M1 (M1/M2 from the drawing XRecord) (M2 for the through-top slots: BL/BR/UBL/UBR ③,
 DB ③④); links run slot-to-slot (inside modules: S / 90° L·R / arch U / cross N; between modules: S of `g − margins`). Facing
 slots closer than the two margins drop both nodes and join the two 90° curves with one U/N link (only C①②, Y②③, BL②, BR②;
 other overlaps warn and, since 2026-11-02, the two slots share one NODE like the gap = margin-sum case, so no

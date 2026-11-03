@@ -645,9 +645,7 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
     nodes: List[MapNode] = []
     nid = {}
 
-    def c1(v):                          # 소수 1자리, -0.0 은 0.0 으로
-        s = f"{v:.1f}"
-        return "0.0" if s == "-0.0" else s
+    c1 = _param_str     # 좌표도 반올림 안 함(1자리로 자르면 MAP→CAD 직선이 0.1mm 기울어진다), 딱 떨어지면 '850.0'
 
     def new_node(p, mod_id="", slot=""):
         n = MapNode(id=f"{len(nodes) + 1:06d}", type="G", reality="R", x=c1(p[0]), y=c1(p[1]),
@@ -937,7 +935,7 @@ def module_lines(res: Result) -> List[str]:
     out = []
     for m in res.modules:
         # 가이드 예시와 같게: Y 뒤에 슬롯 필드를 '/' 로 잇고 끝에 '/' 를 더 붙이지 않는다
-        rx, ry = (("0.0" if v == "-0.0" else v) for v in (f"{m.ref[0]:.1f}", f"{m.ref[1]:.1f}"))
+        rx, ry = _param_str(m.ref[0]), _param_str(m.ref[1])
         out.append(f"MODULE/{m.id}/{m.type}/{m.angle}/{rx}/{ry}/" + "/".join(m.links))
     out.append("MODULEPARAM/" + "/".join(_param_str(v) for v in res.param))
     return out
@@ -946,7 +944,7 @@ def module_lines(res: Result) -> List[str]:
 def _param_str(v: float) -> str:
     """MODULEPARAM 값: 소수 1자리로 딱 떨어지면 가이드처럼 '450.0', 아니면 반올림하지 않는다
     (예: W1 505.555556, A 33.75). 1자리로 자르면 역변환에서 N·BY PASS 형상이 mm 단위로 어긋난다."""
-    v = float(v)
+    v = round(float(v), 6)                # 계산 잡음(1234.0000001)은 6자리에서 정리
     if abs(v - round(v, 1)) < 1e-9:
         s = f"{v:.1f}"
     else:

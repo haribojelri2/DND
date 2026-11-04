@@ -124,6 +124,10 @@ RAILMOD place with it (N/BY PASS/S use the ribbon W1/W2 toggle RAILMODW, no prom
 (widths other than the old W1/W2 are kept), RAILMODEXTRACT(P) derive R/W1/W2/A from modules or plain lines/arcs (W from lane
 changes only; L, M1, M2 kept). Per-company templates in the parameter dialog → `%APPDATA%\RailPlugin\module_templates.txt`. `ModuleGeom.EnsureBlock` refills a same-named block whose shape differs.
 Headless check: RAILMODPARAMTEST via accoreconsole.
+2026-11-04: the dialog/templates show values with 6 decimals (`ModuleParams.F` was `0.##`, so OK saved 505.555556 as 505.56
+and an L-only change also changed W), ApplyAll treats R/W/A differences < 0.001 as equal (keeps the module on the L-only
+`Recover` path), and `Recover` matches lines parallel within 1e-5 (was 1e-7; a 0.004 mm-skewed white line was missed and
+left an 80 mm overlap at 101 places in FAB30_01 L 20→100).
 
 ### Module substitution (cad_to_modules.py) — CAD → CAD
 

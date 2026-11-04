@@ -28,7 +28,8 @@ namespace RailPlugin
                 => $"R{F(R)} L{F(L)} W1 {F(W1)} W2 {F(W2)} A{F(A)} M1 {F(M1)} M2 {F(M2)}";
         }
 
-        public static string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+        // 6자리까지 그대로(505.555556 을 505.56 으로 보여 주면 확인 시 그 글자가 저장돼 L 만 바꿔도 폭이 바뀐다)
+        public static string F(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
 
         public static bool TryParse(string text, out double value)
         {
@@ -693,6 +694,10 @@ namespace RailPlugin
                     Matrix3d xf = br.BlockTransform;
                     var oldPorts = ModuleGeom.Ports(mi, r0, l0, w0, a0);
                     ModuleGeom.Clamp(mi, ref r1, ref l1, ref w1, ref a1);
+                    // 0.001mm·0.001° 안의 차이는 같은 값(반올림 잡음) — 그대로 두어야 'L 만 바뀜' 처리로 흰 선을 정확히 자른다
+                    if (Math.Abs(r1 - r0) < 1e-3) r1 = r0;
+                    if (Math.Abs(w1 - w0) < 1e-3) w1 = w0;
+                    if (Math.Abs(a1 - a0) < 1e-3) a1 = a0;
                     var newPorts = ModuleGeom.Ports(mi, r1, l1, w1, a1);
                     // 곡선 고정: 첫 호의 중심이 예전 자리에 남도록 모듈을 옮긴다 → L 만 바뀌면 곡선은 그대로, 직선 다리만 바깥으로 신축
                     Vector3d shift = ArcAnchor(mi, r0, l0, w0, a0) - ArcAnchor(mi, r1, l1, w1, a1);
@@ -975,7 +980,8 @@ namespace RailPlugin
                 var nrm = new Vector3d(-u.Y, u.X, 0);
                 double c = nrm.DotProduct(a.GetAsVector());
                 foreach (var g in groups)
-                    if (Math.Abs(g.U.X * u.Y - g.U.Y * u.X) < 1e-7 && Math.Abs(g.C - c) < 0.5) return g;
+                    // 평행 허용 1e-5: 접속구 따라 옮긴 흰 선이 0.00x mm 비뚤어져도 같은 레일로 본다(1e-7 이면 못 찾아 자르지 않음)
+                    if (Math.Abs(g.U.X * u.Y - g.U.Y * u.X) < 1e-5 && Math.Abs(g.C - c) < 0.5) return g;
                 if (!create) return null;
                 var ng = new LineGroup { U = u, N = nrm, C = c };
                 groups.Add(ng);

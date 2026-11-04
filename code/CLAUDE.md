@@ -134,7 +134,11 @@ Patterns matched against `module_judge.build_local` (same shapes the plugin draw
 (N / BY PASS / S), single 90° arc at a 3-way node → BRANCH, at a 2-way node → CURVE. Chains must be tangent-continuous
 (`turn_sign` uses the traversal direction, not the stored arc order). `L` (leg length) is reduced until every module
 piece is covered by drawing geometry; a module that still doesn't fit is skipped with a warning. Anything not covered
-stays as LINE/ARC. Verified on `ori_Drawing1_fromMap.dxf`: 14 modules, total line/arc length unchanged (233,753 /
+stays as LINE/ARC. Before matching, `preprocess` (on by default, `prep=False` / `--no-prep` to skip; report lines in
+`res["prep"]`, 2026-11-04): (1) overlapping collinear axis lines → one line (shape kept), (3) an arc end whose tangent is
+axis-parallel and floats ≤ tol from a parallel axis lane line is moved onto it (whole arc shifted, attached line ends follow),
+(2) a long line (≥ 1 m) tilted ≤ 5 mm off an axis is straightened from its lane-anchored end, an arc at the free end moving
+with it. test.dxf: 6 spots moved 1.45–7.14 mm, total length change 0.00 mm, tilted lines 6 → 0. Verified on `ori_Drawing1_fromMap.dxf`: 14 modules, total line/arc length unchanged (233,753 /
 17,223 mm), and the converter then judges it from module info with the same map topology as the geometric path.
 
 ### Module Responsibilities

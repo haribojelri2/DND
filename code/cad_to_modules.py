@@ -511,14 +511,153 @@ def conform(cd: Cand, param, tol: float, ang_tol: float = 1.0) -> str:
 
 
 # ── 본체 ────────────────────────────────────────────────────────────────────
+# ── 전처리 ──────────────────────────────────────────────────────────────────
+def preprocess(segs: List[Seg], tol: float, max_tilt: float = 5.0, min_len: float = 1000.0) -> Tuple[List[Seg], List[str]]:
+    """모듈 찾기 전에 도면 정리. 반환 (정리한 세그먼트, 보고 줄).
+    1) 같은 줄 위에 겹친 직선은 하나로 합친다(형상 그대로, 겹친 길이만 사라짐).
+    2) 레인 정렬: max_tilt 이내로 기운 긴 직선(min_len 이상)은 '레인에 붙은 끝'(정확히 수평·수직인 다른 직선이
+       이어지는 끝)의 좌표로 바로잡는다. 반대쪽 끝에 붙은 호는 같은 양만큼 옮기고(곡률·각도 그대로), 그 호의 다른 끝에
+       붙은 직선은 끝점만 따라온다(차선 이동 사선이 약간 길이·각도만 바뀜). 두 끝 모두 레인에 붙었거나 둘 다 아니면 그대로 둔다."""
+    rep: List[str] = []
+    # 1) 겹친 직선 합치기 — 축 방향 직선만(사선은 겹쳐 그리는 일이 드물고 잘못 합치면 위험)
+    lines = [s for s in segs if s.kind == "LINE"]
+    others = [s for s in segs if s.kind != "LINE"]
+    tracks: Dict[Tuple[str, float], List[Seg]] = {}
+    rest: List[Seg] = []
+    for s in lines:
+        if abs(s.p0[1] - s.p1[1]) < 1e-3 and s.length > 1e-6:
+            tracks.setdefault(("H", round(s.p0[1], 2)), []).append(s)
+        elif abs(s.p0[0] - s.p1[0]) < 1e-3 and s.length > 1e-6:
+            tracks.setdefault(("V", round(s.p0[0], 2)), []).append(s)
+        else:
+            rest.append(s)
+    removed = 0.0
+    out_lines: List[Seg] = []
+    for (ax, c), ss in tracks.items():
+        k = 0 if ax == "H" else 1
+        iv = sorted((min(s.p0[k], s.p1[k]), max(s.p0[k], s.p1[k]), s) for s in ss)
+        groups: List[List[Any]] = []
+        for lo, hi, s in iv:
+            if groups and lo < groups[-1][1] - 1e-6:          # 겹침(맞닿기만 하면 그대로 둔다)
+                groups[-1][1] = max(groups[-1][1], hi)
+                groups[-1][2].append(s)
+            else:
+                groups.append([lo, hi, [s]])
+        for lo, hi, members in groups:
+            if len(members) == 1:
+                out_lines.append(members[0]); continue
+            tot = sum(m.length for m in members)
+            removed += tot - (hi - lo)
+            m0 = members[0]
+            p0 = (lo, m0.p0[1]) if ax == "H" else (m0.p0[0], lo)
+            p1 = (hi, m0.p0[1]) if ax == "H" else (m0.p0[0], hi)
+            out_lines.append(Seg("LINE", p0, p1, layer=m0.layer))
+            mid = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+            rep.append(f"[전처리] 겹친 직선 {len(members)}개 → 1개 ({mid[0]:.0f}, {mid[1]:.0f}) 겹친 길이 {tot - (hi - lo):.0f} mm")
+    segs = out_lines + rest + others
+
+    ETOL = 0.5                                                  # 끝점이 '붙었다'고 보는 거리
+    def ends_at(p: Pt, skip: Seg) -> List[Tuple[Seg, int]]:
+        return [(s, e) for s in segs if s is not skip for e, q in ((0, s.p0), (1, s.p1)) if dist(q, p) <= ETOL]
+
+    def axis_exact(s: Seg, ax: str) -> bool:
+        return s.kind == "LINE" and s.length > 1e-6 and (abs(s.p0[1] - s.p1[1]) < 1e-3 if ax == "H" else abs(s.p0[0] - s.p1[0]) < 1e-3)
+
+    def shift_arc(o: Seg, shift: Pt) -> None:
+        """호를 통째로 옮기고, 두 끝에 붙은 직선은 끝점만 따라오게 한다(그 직선의 다른 끝은 그대로)."""
+        for p in (o.p0, o.p1):
+            for o2, e2 in ends_at(p, o):
+                if o2.kind == "LINE":
+                    if e2 == 0: o2.p0 = add(o2.p0, shift)
+                    else: o2.p1 = add(o2.p1, shift)
+        o.p0, o.p1, o.c = add(o.p0, shift), add(o.p1, shift), add(o.c, shift)
+
+    # 3) 곡선 끝을 레인에 붙이기: 호 끝의 접선이 축 방향이고, 그와 나란한 정확한 수평·수직 직선(레인)이 수직 거리
+    #    tol 안에 떠 있으면(끝점이 닿지 않음) 호를 레인 쪽으로 옮긴다. 연결부 전체가 몇 mm 밀려 그려진 도면 정리.
+    axis_lines = [s for s in segs if axis_exact(s, "H") or axis_exact(s, "V")]
+    snapped = 0
+    for o in [x for x in segs if x.kind == "ARC"]:
+        for p in (o.p0, o.p1):
+            if any(o2.kind == "LINE" and axis_exact(o2, "H" if abs(o.tangent_at(p)[1]) < 1e-6 else "V") for o2, _ in ends_at(p, o)):
+                continue                                         # 이미 레인 직선 끝에 붙어 있음
+            t = o.tangent_at(p)
+            ax = "H" if abs(t[1]) < 1e-6 else ("V" if abs(t[0]) < 1e-6 else None)
+            if ax is None:
+                continue
+            k = 1 if ax == "H" else 0                            # 레인과 수직인 성분
+            best = None
+            for ln in axis_lines:
+                if not axis_exact(ln, ax):
+                    continue
+                lo, hi = sorted((ln.p0[1 - k], ln.p1[1 - k]))
+                if not (lo - tol <= p[1 - k] <= hi + tol):
+                    continue
+                d = ln.p0[k] - p[k]
+                if 0.01 < abs(d) <= tol and (best is None or abs(d) < abs(best)):
+                    best = d
+            if best is None:
+                continue
+            shift = (0.0, best) if ax == "H" else (best, 0.0)
+            shift_arc(o, shift)
+            snapped += 1
+            rep.append(f"[전처리] 곡선 끝을 레인에 붙임 ({p[0]:.0f}, {p[1]:.0f}) {abs(best):.2f} mm 이동")
+            break                                                # 한 호는 한 번만 옮긴다
+
+    # 2) 레인 정렬
+    moved = 0
+    for s in [x for x in segs if x.kind == "LINE"]:
+        dx, dy = abs(s.p1[0] - s.p0[0]), abs(s.p1[1] - s.p0[1])
+        ax = "H" if dx >= dy else "V"
+        dev = dy if ax == "H" else dx
+        if not (1e-3 <= dev <= max_tilt) or s.length < min_len:
+            continue
+        k = 1 if ax == "H" else 0                               # 바로잡을 좌표 성분(H 면 y)
+        anch = [any(axis_exact(o, ax) and abs((o.p0[k]) - p[k]) < 1e-3 for o, _ in ends_at(p, s)) for p in (s.p0, s.p1)]
+        if anch[0] == anch[1]:
+            continue
+        fixed, free = (s.p0, s.p1) if anch[0] else (s.p1, s.p0)
+        delta = fixed[k] - free[k]
+        shift = (0.0, delta) if ax == "H" else (delta, 0.0)
+        new_free = add(free, shift)
+        att = ends_at(free, s)
+        # 반대쪽 끝에 붙은 호는 통째로 옮기고, 그 호의 다른 끝에 붙은 직선은 끝점만 따라온다
+        for o, e in att:
+            if o.kind == "ARC":
+                far = o.p1 if e == 0 else o.p0
+                for o2, e2 in ends_at(far, o):
+                    if o2.kind == "LINE":
+                        if e2 == 0: o2.p0 = add(o2.p0, shift)
+                        else: o2.p1 = add(o2.p1, shift)
+                o.p0, o.p1, o.c = add(o.p0, shift), add(o.p1, shift), add(o.c, shift)
+            elif o.kind == "LINE":
+                if e == 0: o.p0 = add(o.p0, shift)
+                else: o.p1 = add(o.p1, shift)
+        if free is s.p0 or dist(free, s.p0) < 1e-9:
+            s.p0 = new_free
+        else:
+            s.p1 = new_free
+        moved += 1
+        rep.append(f"[전처리] 레인 정렬 ({free[0]:.0f}, {free[1]:.0f}) {abs(delta):.2f} mm 이동"
+                   + (f" (붙은 호 {sum(1 for o, _ in att if o.kind == 'ARC')}개 함께)" if any(o.kind == 'ARC' for o, _ in att) else ""))
+    if removed or moved or snapped:
+        rep.insert(0, f"[전처리] 겹친 직선 합침 {removed:.0f} mm, 곡선 끝 레인에 붙임 {snapped}곳, 레인 정렬 {moved}곳")
+    return segs, rep
+
+
 def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
             module_color: int = 0, plain_color: int = 0, module_layer: str = "",
-            max_w: float = 4000.0, log=print, param=None) -> Dict[str, Any]:
-    """param = 도면 파라미터 (R, L, W1, W2, A, M1, M2) 이면 그 한 세트로만 치환하고 결과 도면에 기록한다."""
+            max_w: float = 4000.0, log=print, param=None, prep: bool = True) -> Dict[str, Any]:
+    """param = 도면 파라미터 (R, L, W1, W2, A, M1, M2) 이면 그 한 세트로만 치환하고 결과 도면에 기록한다.
+    prep = 모듈 찾기 전 전처리(겹친 직선 합치기·레인 정렬, preprocess 참고)."""
     doc = ezdxf.readfile(in_path)
     segs = read_segments(doc, layers)
     if not segs:
         raise SystemExit("선·호를 찾지 못했습니다 (레이어 지정을 확인하세요)")
+    prep_rep: List[str] = []
+    if prep:
+        segs, prep_rep = preprocess(segs, tol)
+        for ln in prep_rep:
+            log(ln)
     g = Graph(segs, tol)
     # 포함 관계(사용자 제안서: CURVE ⊂ BRANCH ⊂ U BRANCH ⊂ DOUBLE BRANCH): 작은 형상부터 인식해 올라가다
     #  안 되는 단계에서 멈추고, 멈춘 단계의 형상을 넣는다. 인식 = 형상(갈림·짝 호)과 파라미터(R·W·A) 일치.
@@ -719,7 +858,7 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
 
     lay.save(out_path)
     return {"modules": placed, "skipped": skipped, "left_lines": left_lines, "left_arcs": left_arcs,
-            "segs": len(segs)}
+            "segs": len(segs), "prep": prep_rep}
 
 
 def substitute(in_path: str, out_path: Optional[str] = None, layers=None, tol: float = 8.0,
@@ -745,6 +884,7 @@ def substitute(in_path: str, out_path: Optional[str] = None, layers=None, tol: f
              f"모듈 {len(res['modules'])}개로 치환 (선·호 {res['segs']}개 중)"]
     lines += [f"   {k} {v}" for k, v in sorted(cnt.items())]
     lines.append(f"모듈로 못 바꾼 곳: 직선 {res['left_lines']}개, 호 {res['left_arcs']}개 (흰색으로 남김)")
+    lines += res.get("prep", [])
     for cd, why in res["skipped"]:
         tag = "[참고]" if "까지 넣음" in why else "[주의]"
         lines.append(f"{tag} {cd.name} 자리 ({cd.at[0]:.0f}, {cd.at[1]:.0f}) - {why}")
@@ -764,6 +904,7 @@ def main(argv=None) -> int:
     ap.add_argument("--module-layer", default="", help="모듈을 놓을 레이어 이름(색을 주려면 지정)")
     ap.add_argument("--max-w", type=float, default=4000.0,
                     help="되돌림·차선이동 모듈로 볼 최대 폭 mm (넘으면 곡선·분기 모듈로 따로 처리)")
+    ap.add_argument("--no-prep", action="store_true", help="전처리(겹친 직선 합치기·레인 정렬) 끄기")
     ap.add_argument("--param-from-input", action="store_true",
                     help="입력 도면에 저장된 플러그인 파라미터 한 세트로만 치환(치환 버튼과 같음)")
     a = ap.parse_args(argv)
@@ -776,7 +917,7 @@ def main(argv=None) -> int:
     layers = [s.strip() for s in a.layer.split(",") if s.strip()] or None
     res = convert(a.input, out, layers, a.tol, a.L,
                   module_color=a.module_color, plain_color=a.plain_color, module_layer=a.module_layer,
-                  max_w=a.max_w)
+                  max_w=a.max_w, prep=not a.no_prep)
 
     import collections
     cnt = collections.Counter(m[0] for m in res["modules"])

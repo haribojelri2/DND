@@ -804,6 +804,26 @@ def build(modules, unified_edges, cfg: dict, margins: Tuple[float, float], log=p
         _pos = {n.id: (float(n.x), float(n.y)) for n in nodes}
         _where = ", ".join(f"({_pos[c][0]:.0f},{_pos[c][1]:.0f})" for c in nconf[:5] if c in _pos)
         warn(f"[확인 필요] 진행 방향 규칙이 서로 맞지 않는 곳 {len(nconf)}군데 {_where} - 도면의 분기 배치를 확인하세요")
+    # 연결 끊긴 슬롯: 모듈 슬롯 NODE 인데 모듈 밖(다른 모듈·일반 선)으로 이어진 링크가 하나도 없다. 대개 두 모듈이
+    #  같은 레일 조각을 나눠 써 슬롯 짝이 안 잡힌 자리(분기 옆에 바로 차선 이동)이거나 도면이 실제로 끊긴 자리
+    _nmod = {n.id: n.module_id for n in nodes}
+    _ext = set()
+    for l in links:
+        a, b = l.start_node_id, l.end_node_id
+        if not _nmod.get(a) or _nmod.get(a) != _nmod.get(b):
+            _ext.update((a, b))
+    _mby = {m.id: m for m in smods}
+    for n in nodes:
+        if not n.module_id or n.id in _ext:
+            continue
+        m = _mby.get(n.module_id)
+        mt = m.type if m else "?"
+        x, y = float(n.x), float(n.y)
+        LAST_ISSUES.append({"x": x, "y": y, "gap": 0, "need": 0,
+                            "ha": str(getattr(m.inst, "handle", "") or "") if m else "", "hb": "",
+                            "text": f"연결 끊긴 슬롯 {mt}{n.slot_id}"})
+        warn(f"[확인 필요] 연결 끊긴 슬롯 ({x:.0f}, {y:.0f}): 모듈 {n.module_id}({mt}) 슬롯{n.slot_id} - 이웃 모듈·선과 "
+             f"이어지지 않음. 모듈 겹침(분기 옆에 바로 차선 이동 등) 또는 도면 끊김을 확인하세요")
     return Result(nodes, links, smods, (R0, L0, W1, W2, A0, M1, M2), warns)
 
 

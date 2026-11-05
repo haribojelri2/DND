@@ -180,12 +180,15 @@ def run_pipeline(dxf_path: str, cfg: dict, log,
         log(f"모듈 {len(res.modules)}개 → MODULE 레코드, MODULEPARAM "
             + "/".join(f"{v:g}" for v in res.param))
         _ovl = [w for w in res.warnings if w.startswith("[확인 필요] 마진 겹침")]
+        _open = [w for w in res.warnings if w.startswith("[확인 필요] 연결 끊긴 슬롯")]
         # 간격 경고 기준 = 이 MAP 의 실제 배치(슬롯 + M1·M2). 각 줄은 build 가 이미 로그에 남겼다
-        mjudge.spacing_warnings = [w.split("] ", 1)[1] for w in _ovl]
+        mjudge.spacing_warnings = [w.split("] ", 1)[1] for w in _ovl + _open]
         mjudge.spacing_logged = True
         if _ovl:
             log(f"[확인 필요] 마진 겹침 {len(_ovl)}곳 - 두 모듈 간격이 마진 합보다 짧습니다. "
                 f"마진(M1·M2) 설정이나 도면을 확인하세요 (위치는 위 로그)")
+        if _open:
+            log(f"[확인 필요] 연결 끊긴 슬롯 {len(_open)}곳 - 모듈 밖과 이어지지 않아 주행 경로가 끊깁니다 (위치는 위 로그)")
         _report_tail(doc, DXF_PATH, mjudge, nodes, links, stb_ports, MAP_OUT, log)
         return
 

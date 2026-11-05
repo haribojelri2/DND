@@ -511,6 +511,47 @@ def conform(cd: Cand, param, tol: float, ang_tol: float = 1.0) -> str:
 
 
 # ── 본체 ────────────────────────────────────────────────────────────────────
+# ── 단위 통일 ────────────────────────────────────────────────────────────────
+_UNIT_NAMES = {0: "표시 없음", 1: "inch", 2: "feet", 4: "mm", 5: "cm", 6: "m", 10: "yard", 14: "dm"}
+
+
+def unit_to_mm(doc, segs: List[Seg]) -> Tuple[float, str]:
+    """도면 단위($INSUNITS) → mm 배율과 보고 줄. 표시가 없으면(0) 곡선 반지름 중앙값으로 짐작한다
+    (OHT 레일 곡선은 수백 mm: 10 미만이면 m, 100 미만이면 cm, 그 이상이면 mm)."""
+    try:
+        u = int(doc.header.get("$INSUNITS", 0) or 0)
+    except (TypeError, ValueError):
+        u = 0
+    if u == 4:
+        return 1.0, ""
+    if u == 0:
+        rs = sorted(s.r for s in segs if s.kind == "ARC")
+        if not rs:
+            return 1.0, "[전처리] 도면 단위 표시 없음 - 곡선이 없어 mm 로 봄"
+        med = rs[len(rs) // 2]
+        if med < 10:
+            return 1000.0, f"[전처리] 도면 단위 표시 없음 - 곡선 반지름 중앙값 {med:g} → m 로 보고 mm 로 바꿈(×1000)"
+        if med < 100:
+            return 10.0, f"[전처리] 도면 단위 표시 없음 - 곡선 반지름 중앙값 {med:g} → cm 로 보고 mm 로 바꿈(×10)"
+        return 1.0, f"[전처리] 도면 단위 표시 없음 - 곡선 반지름 중앙값 {med:g} → mm 로 봄"
+    try:
+        f = float(ezdxf.units.conversion_factor(u, 4))
+    except Exception:
+        return 1.0, f"[경고] 알 수 없는 도면 단위 코드 {u} - mm 로 봄"
+    return f, f"[전처리] 도면 단위 {_UNIT_NAMES.get(u, u)} → mm 로 바꿈(×{f:g})"
+
+
+def scale_segments(segs: List[Seg], f: float) -> None:
+    if abs(f - 1.0) < 1e-12:
+        return
+    for s in segs:
+        s.p0 = (s.p0[0] * f, s.p0[1] * f)
+        s.p1 = (s.p1[0] * f, s.p1[1] * f)
+        if s.c is not None:
+            s.c = (s.c[0] * f, s.c[1] * f)
+        s.r *= f
+
+
 # ── 전처리 ──────────────────────────────────────────────────────────────────
 def preprocess(segs: List[Seg], tol: float, max_tilt: float = 5.0, min_len: float = 1000.0) -> Tuple[List[Seg], List[str]]:
     """모듈 찾기 전에 도면 정리. 반환 (정리한 세그먼트, 보고 줄).
@@ -654,10 +695,15 @@ def convert(in_path: str, out_path: str, layers, tol: float, l_max: float,
     if not segs:
         raise SystemExit("선·호를 찾지 못했습니다 (레이어 지정을 확인하세요)")
     prep_rep: List[str] = []
+    f_mm, unit_line = unit_to_mm(doc, segs)          # 결과 도면은 mm(Lay) 이므로 단위 통일은 항상 한다
+    scale_segments(segs, f_mm)
+    if unit_line:
+        prep_rep.append(unit_line)
     if prep:
-        segs, prep_rep = preprocess(segs, tol)
-        for ln in prep_rep:
-            log(ln)
+        segs, rep2 = preprocess(segs, tol)
+        prep_rep += rep2
+    for ln in prep_rep:
+        log(ln)
     g = Graph(segs, tol)
     # 포함 관계(사용자 제안서: CURVE ⊂ BRANCH ⊂ U BRANCH ⊂ DOUBLE BRANCH): 작은 형상부터 인식해 올라가다
     #  안 되는 단계에서 멈추고, 멈춘 단계의 형상을 넣는다. 인식 = 형상(갈림·짝 호)과 파라미터(R·W·A) 일치.

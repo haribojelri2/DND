@@ -1343,6 +1343,63 @@ namespace RailPlugin
             ed.WriteMessage("\nRAILMODCONVTEST: " + (outp ?? "실패"));
         }
 
+        // MAP → CAD: 모듈 형식 MAP 을 골라 변환기(DXFtoMAP.exe --map2cad)로 도면을 만들고 연다.
+        //  결과는 MAP 과 같은 폴더에 <MAP이름>_fromMap.dxf (변환기 창의 MAP→CAD 와 같은 이름). Session = 도면 0개여도 실행.
+        [CommandMethod("RAILMAP2CAD", CommandFlags.Session)]
+        public void RailMap2Cad()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc?.Editor;
+            string exe = Cad2Map.Resolve();
+            if (exe == null) { Warn("변환기(" + Cad2Map.EXE + ")를 찾지 못했습니다. 설치 프로그램을 다시 실행해 주세요."); return; }
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "CAD 로 복원할 MAP 선택 (모듈 형식 MAP)",
+                Filter = "MAP 파일 (*.map)|*.map|모든 파일 (*.*)|*.*",
+            };
+            if (dlg.ShowDialog() != true) return;
+            string map = dlg.FileName;
+            string outp = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(map),
+                                                 System.IO.Path.GetFileNameWithoutExtension(map) + "_fromMap.dxf");
+            string report = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "RailPlugin_map2cad",
+                                                   System.IO.Path.GetFileNameWithoutExtension(map) + "_result.txt");
+            try { if (System.IO.File.Exists(report)) System.IO.File.Delete(report); } catch { }
+            ed?.WriteMessage("\nRAILMAP2CAD: 변환 중... (" + System.IO.Path.GetFileName(outp) + ")");
+            int code;
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo(exe)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = System.IO.Path.GetDirectoryName(exe),
+                    Arguments = "--map2cad \"" + map + "\" \"" + outp + "\" --report \"" + report + "\"",
+                };
+                using (var pr = System.Diagnostics.Process.Start(psi))
+                {
+                    if (!pr.WaitForExit(600000)) { try { pr.Kill(); } catch { } Warn("10분 안에 끝나지 않아 중단했습니다."); return; }
+                    code = pr.ExitCode;
+                }
+            }
+            catch (System.Exception ex) { Warn("변환기 실행 실패 - " + ex.Message); return; }
+            string text = "";
+            try { if (System.IO.File.Exists(report)) text = System.IO.File.ReadAllText(report, System.Text.Encoding.UTF8).Trim(); } catch { }
+            if (ed != null) foreach (string ln in text.Split('\n')) ed.WriteMessage("\n  " + ln.TrimEnd('\r'));
+            if (code != 0 || !System.IO.File.Exists(outp))
+            {
+                Warn(text.Length > 0 ? text : "CAD 로 복원하지 못했습니다 (코드 " + code + ").");
+                return;
+            }
+            try { Application.DocumentManager.Open(outp, false); }
+            catch (System.Exception ex) { Warn("결과 도면 열기 실패 - " + ex.Message + "\n" + outp); }
+
+            void Warn(string m)
+            {
+                ed?.WriteMessage("\nRAILMAP2CAD: " + m.Replace("\n", " "));
+                try { System.Windows.MessageBox.Show(m, "MAP → CAD", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning); } catch { }
+            }
+        }
+
         // 모듈 삭제: 선택한 모듈을 지우고, 참조가 없어진 모듈 블록 정의도 정리한다.
         [CommandMethod("RAILMODDEL")]
         public void RailModDel()
@@ -1732,6 +1789,9 @@ namespace RailPlugin
                 // 변환 — CAD→MAP 변환기(DXFtoMAP.exe). 예전 Rail 탭에서 옮겨 왔다(모듈 도면만 변환하므로 모듈 탭에서 쓴다)
                 var srcV = new Autodesk.Windows.RibbonPanelSource { Title = "변환" };
                 srcV.Items.Add(RibbonBuilder.MakeButton("CAD→MAP\n변환기", new Cad2MapHandler(), 6));
+                srcV.Items.Add(Sep());
+                srcV.Items.Add(MakeCmdButton("MAP→CAD\n복원", "RAILMAP2CAD",
+                    "모듈 형식 MAP 을 골라 도면으로 복원하고 엽니다. 결과는 MAP 과 같은 폴더에 <MAP이름>_fromMap.dxf 로 저장됩니다"));
                 tab.Panels.Add(new Autodesk.Windows.RibbonPanel { Source = srcV });
 
                 rc.Tabs.Add(tab);

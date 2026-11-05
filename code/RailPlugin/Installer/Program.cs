@@ -51,6 +51,8 @@ namespace RailPluginSetup
                 bool convLocked = !Extract(CONVNAME, Path.Combine(contents, CONVNAME));
                 string cfgPath = Path.Combine(contents, CONFIGNAME);
                 if (!File.Exists(cfgPath)) Extract(CONFIGNAME, cfgPath);
+                // 변환기 바로가기 (바탕화면·시작 메뉴) — CAD 없이 MAP→CAD·CAD→MAP 만 쓸 때
+                bool lnk = MakeShortcuts(Path.Combine(contents, CONVNAME));
 
                 // 2) 실행 중인 AutoCAD 에 즉시 로드
                 bool injected = !locked && TryInject(dll);
@@ -65,9 +67,12 @@ namespace RailPluginSetup
                 if (injected) m.AppendLine("실행 중인 AutoCAD 에 지금 바로 로드했습니다.");
                 else if (locked) m.AppendLine("AutoCAD 를 완전히 종료한 뒤 이 프로그램을 한 번 더 실행해 주세요.");
                 if (convLocked) m.AppendLine("CAD→MAP 변환기(" + CONVNAME + ")가 실행 중이라 갱신하지 못했습니다. 닫고 다시 실행해 주세요.");
+                m.AppendLine(lnk
+                    ? "바탕화면·시작 메뉴에 '" + LNKNAME + "' 바로가기를 만들었습니다 (CAD 없이 MAP→CAD·CAD→MAP)."
+                    : "변환기 바로가기를 만들지 못했습니다. 변환기 위치: " + Path.Combine(contents, CONVNAME));
                 m.AppendLine();
-                m.AppendLine("명령: DRAWRAILV(레일) / RAILPART(부품) / RAILW(폭) / RAILLEN(길이) / RAILFIX(복구) / CAD2MAP(변환기)");
-                m.AppendLine("리본 'Rail' 탭에서도 쓸 수 있습니다. 'CAD→MAP 변환기' 버튼이 DXFtoMAP.exe 를 실행합니다.");
+                m.AppendLine("명령: DRAWRAILV(레일) / RAILPART(부품) / RAILW(폭) / RAILLEN(길이) / RAILFIX(복구) / CAD2MAP(변환기) / RAILMAP2CAD(MAP→CAD)");
+                m.AppendLine("리본 'Module' 탭 [변환] 칸의 'CAD→MAP 변환기'·'MAP→CAD 복원' 버튼으로도 쓸 수 있습니다.");
 
                 // 결과를 설치 폴더에 남긴다 (문제 진단용 / 무인 설치 확인용)
                 try { File.WriteAllText(Path.Combine(dir, "setup.log"), m.ToString(), Encoding.UTF8); } catch { }
@@ -100,6 +105,52 @@ namespace RailPluginSetup
             catch (UnauthorizedAccessException) { return false; }
         }
 
+        // 바로가기 이름 — AutoCAD·ZWCAD 판이 같은 이름을 쓴다(둘 다 설치하면 나중 것이 덮어씀, 내용은 같은 변환기)
+        const string LNKNAME = "DXFtoMAP 변환기";
+
+        static string[] ShortcutPaths() => new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), LNKNAME + ".lnk"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), LNKNAME + ".lnk"),
+        };
+
+        // WScript.Shell COM 으로 .lnk 를 만든다 (관리자 권한 불필요 — 사용자 바탕화면·시작 메뉴만)
+        static bool MakeShortcuts(string exe)
+        {
+            bool ok = true;
+            foreach (string p in ShortcutPaths())
+            {
+                try
+                {
+                    dynamic sh = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+                    dynamic s = sh.CreateShortcut(p);
+                    s.TargetPath = exe;
+                    s.WorkingDirectory = Path.GetDirectoryName(exe);
+                    s.Description = "CAD→MAP / MAP→CAD 변환기";
+                    s.IconLocation = exe + ",0";
+                    s.Save();
+                }
+                catch { ok = false; }
+            }
+            return ok;
+        }
+
+        // 제거: 이 설치 폴더의 변환기를 가리키는 바로가기만 지운다 (다른 CAD 판이 만든 것은 남김)
+        static void RemoveShortcuts(string dir, StringBuilder m)
+        {
+            foreach (string p in ShortcutPaths())
+            {
+                try
+                {
+                    if (!File.Exists(p)) continue;
+                    dynamic sh = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+                    string target = (string)sh.CreateShortcut(p).TargetPath;
+                    if (target.StartsWith(dir, StringComparison.OrdinalIgnoreCase)) { File.Delete(p); m.AppendLine("바로가기 제거: " + p); }
+                }
+                catch { }
+            }
+        }
+
         // 이미 떠 있는 AutoCAD 에 COM 으로 NETLOAD 를 흘려넣는다 (없으면 조용히 실패)
         static bool TryInject(string dll)
         {
@@ -127,6 +178,7 @@ namespace RailPluginSetup
             }
             else
             {
+                RemoveShortcuts(dir, m);
                 try { if (File.Exists(manifest)) File.Delete(manifest); m.AppendLine("자동 로드 등록을 해제했습니다."); }
                 catch (Exception ex) { m.AppendLine("[실패] 매니페스트 삭제: " + ex.Message); }
 

@@ -1034,24 +1034,40 @@ def _cli_cad2mod(argv: list[str]) -> int:
 def _cli_map2cad(argv: list[str]) -> int:
     """`DXFtoMAP.exe --map2cad <map> [out.dxf] [--ports]` — 창 없이 역변환만 수행(배치용).
     반지름은 exe 옆 config.json 의 branch_detection.rail_arc_radius_mm 을 쓴다.
-    포트 마커는 GUI 체크박스와 같게 **기본 끔** — `--ports` 를 주면 그린다."""
+    포트 마커는 GUI 체크박스와 같게 **기본 끔** — `--ports` 를 주면 그린다.
+    `--report <txt>` 를 주면 결과·경고를 그 파일(UTF-8)에도 쓴다(창 없는 exe 라 print 가 안 보이므로 플러그인 버튼용)."""
     draw_ports = "--ports" in argv
+    report = None
+    if "--report" in argv:
+        i = argv.index("--report")
+        report = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     args = [a for a in argv if not a.startswith("--")]
     if len(args) < 1:
-        print("사용법: --map2cad <map 경로> [출력 dxf] [--ports]")
+        print("사용법: --map2cad <map 경로> [출력 dxf] [--ports] [--report <txt>]")
         return 2
     cfg = load_cfg()
     _bd = cfg.get("branch_detection", {})
+    lines = []
     try:
         st = map_to_dxf(args[0], args[1] if len(args) > 1 else None,
                         radius_mm=float(_bd.get("rail_arc_radius_mm", 480.0)),
                         radius_tol_mm=float(_bd.get("rail_arc_radius_tol_mm", 5.0)),
-                        draw_ports=draw_ports)
+                        draw_ports=draw_ports, log=lines.append)
+        lines.append(f"완료: {st['dxf']} (LINE {st['lines']} / ARC {st['arcs']} / 경고 {len(st['warnings'])})")
+        code = 0
     except Exception as e:
-        print(f"[오류] {e}")
-        return 1
-    print(f"완료: {st['dxf']} (LINE {st['lines']} / ARC {st['arcs']} / 경고 {len(st['warnings'])})")
-    return 0
+        lines.append(f"[오류] {e}")
+        code = 1
+    for ln in lines:
+        print(ln)
+    if report:
+        try:
+            Path(report).parent.mkdir(parents=True, exist_ok=True)
+            Path(report).write_text("\n".join(str(x) for x in lines) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return code
 
 
 def _cli_margincheck(argv: list[str]) -> int:

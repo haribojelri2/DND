@@ -128,6 +128,10 @@ Headless check: RAILMODPARAMTEST via accoreconsole.
 and an L-only change also changed W), ApplyAll treats R/W/A differences < 0.001 as equal (keeps the module on the L-only
 `Recover` path), and `Recover` matches lines parallel within 1e-5 (was 1e-7; a 0.004 mm-skewed white line was missed and
 left an 80 mm overlap at 101 places in FAB30_01 L 20→100).
+2026-11-05: MAP→CAD entry points — ribbon Module tab [변환] "MAP→CAD 복원" = RAILMAP2CAD (pick a .map, runs
+`DXFtoMAP.exe --map2cad <map> <stem>_fromMap.dxf --report <tmp txt>` hidden, shows the report, opens the DXF; `--report` added
+because the windowed exe's print is invisible), and both installers make a "DXFtoMAP 변환기" shortcut (desktop + Start menu,
+WScript.Shell) to the installed exe; uninstall removes it only if it points into that install folder.
 
 ### Module substitution (cad_to_modules.py) — CAD → CAD
 
@@ -142,15 +146,15 @@ stays as LINE/ARC. Before matching, `preprocess` (on by default, `prep=False` / 
 `res["prep"]`, 2026-11-04): (1) overlapping collinear axis lines → one line (shape kept), (3) an arc end whose tangent is
 axis-parallel and floats ≤ tol from a parallel axis lane line is moved onto it (whole arc shifted, attached line ends follow),
 (2) a long line (≥ 1 m) tilted ≤ 5 mm off an axis is straightened from its lane-anchored end, an arc at the free end moving
-with it. test.dxf: 6 spots moved 1.45–7.14 mm, total length change 0.00 mm, tilted lines 6 → 0.
+with it. test.dxf: 6 spots moved 1.45–7.14 mm, total length change 0.00 mm, tilted lines 6 → 0. Verified on `ori_Drawing1_fromMap.dxf`: 14 modules, total line/arc length unchanged (233,753 /
+17,223 mm), and the converter then judges it from module info with the same map topology as the geometric path.
 Unit unification (2026-11-05, always on, before preprocess): `unit_to_mm` reads `$INSUNITS` (4 = mm; other codes via
 `ezdxf.units.conversion_factor`; 0 = unitless → guessed from the median arc radius: < 10 → m, < 100 → cm, else mm) and
 `scale_segments` scales the input to mm (the output is always mm). mm/m/cm/inch/unitless copies of FAB30_01 give identical results.
 Disconnected-slot warning (2026-11-05, `module_map.build`): a module NODE with no link to another module or plain node
 logs `[확인 필요] 연결 끊긴 슬롯 (x, y)` and goes into `LAST_ISSUES` / `_modules.csv` (FAB30_01: 6, FAB30_06: 24 — branch and
 lane-change modules starting at the same point; module tests A–H: 0, maps unchanged). Telling intended breaks (ports,
-stocker, inlets) from drawing errors is designed, not implemented: `단절판별_설계.md`. Verified on `ori_Drawing1_fromMap.dxf`: 14 modules, total line/arc length unchanged (233,753 /
-17,223 mm), and the converter then judges it from module info with the same map topology as the geometric path.
+stocker, inlets) from drawing errors is designed, not implemented: `단절판별_설계.md`.
 
 ### Module Responsibilities
 
